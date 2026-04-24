@@ -51,10 +51,11 @@ logger:
   level: INFO
   hardware_uart: USB_SERIAL_JTAG
 
-# 外部自訂元件（Phase 1：sim_fsm + sim_ws_server；Phase 3 會加 sim_assertion）
+# 外部自訂元件（Phase 1：sim_fsm + sim_ws_server + ota_update；Phase 3 會加 sim_assertion）
+# ota_update 直接從主板 repo 複製（mbedtls 自包，無其他依賴）
 external_components:
   - source: my_components
-    components: [sim_fsm, sim_ws_server]
+    components: [sim_fsm, sim_ws_server, ota_update]
 
 wifi:
   ssid: !secret wifi_ssid
@@ -100,6 +101,15 @@ sim_ws_server:
   id: sws
   port: 8090
 
+# Cloud OTA：manifest + firmware 放在 github public repo frankiehex/H_OTA_SIM
+# 開機 8 秒後自動檢查一次（check_on_boot:true），失敗重試最多 5 次，每 30s 一次
+# Dashboard 按鈕也可手動觸發（id(sim_ota).check_for_update()）
+ota_update:
+  id: sim_ota
+  manifest_url: "https://raw.githubusercontent.com/frankiehex/H_OTA_SIM/main/manifest.json"
+  current_version: "${SIM_FIRMWARE_VER}"
+  check_on_boot: true
+
 # === Text sensors：Dashboard 顯示狀態 ===
 text_sensor:
   - platform: template
@@ -136,6 +146,24 @@ text_sensor:
     name: "Last UART RX Bytes"
     id: last_uart_rx
     update_interval: never
+
+  # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
+  - platform: template
+    name: "OTA Status"
+    id: ota_status
+    update_interval: never
+
+  - platform: template
+    name: "OTA Remote Version"
+    id: ota_remote_version
+    lambda: 'return id(sim_ota).get_remote_version();'
+    update_interval: 5s
+
+  - platform: template
+    name: "OTA Current Version"
+    id: ota_current_version
+    lambda: 'return std::string("${SIM_FIRMWARE_VER}");'
+    update_interval: 60s
 
 # === Sensors：統計數字 ===
 sensor:
@@ -229,3 +257,9 @@ button:
     id: btn_disconnect
     on_press:
       - lambda: 'id(sws).disconnect_client("dashboard request");'
+
+  - platform: template
+    name: "Check OTA Now"
+    id: btn_check_ota
+    on_press:
+      - lambda: 'id(sim_ota).check_for_update();'

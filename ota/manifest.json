@@ -1,0 +1,6 @@
+{
+  "version": "0.1.0",
+  "firmware_url": "https://raw.githubusercontent.com/frankiehex/H_OTA_SIM/main/firmware.ota.bin",
+  "min_version": "0.0.0",
+  "notes": "Phase 1 skeleton: WiFi + LED control + WS server handshake"
+}

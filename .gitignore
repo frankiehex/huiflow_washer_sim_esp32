@@ -19,6 +19,5 @@ secrets.yaml
 .env
 .env.local
 
-# OTA binary artifacts（每次 build 產生，不污染 git diff）
-*.factory-v*.bin
-*.ota-v*.bin
+# Binary artifacts 跟主板慣例一致提交（方便用戶 git pull 直接 esptool 燒錄）
+# 每次 build 覆寫版本號對應的 bin，git diff 只會看到 binary summary 不污染
