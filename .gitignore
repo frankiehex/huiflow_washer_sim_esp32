@@ -1,0 +1,24 @@
+# ESPHome build artifacts
+.esphome/
+**/build/
+**/.pioenvs/
+**/.piolibdeps/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Secrets：真實密碼絕不 commit，只提交 secrets.example.yaml template
+secrets.yaml
+.env
+.env.local
+
+# OTA binary artifacts（每次 build 產生，不污染 git diff）
+*.factory-v*.bin
+*.ota-v*.bin

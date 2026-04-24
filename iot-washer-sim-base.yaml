@@ -1,0 +1,231 @@
+# HuiFlow 洗車機模擬板 — iot-washer-sim-base.yaml
+# 目的：取代真實洗車機 + RPi WS server，快速壓力測試主板 v4.0.68 狀態機
+# 對外接線（見 docs/spec.md）：
+#   GPIO6 → 主板 GPIO21 (washer_led_blue, INPUT_PULLUP + inverted)
+#   GPIO7 → 主板 GPIO47 (washer_led_green)
+#   GPIO8 → 主板 GPIO35 (washer_led_red)
+#   GPIO15 ← 主板 GPIO1  (UART2 TX, 9600 8N1)
+#   GND 共地
+# 對外網路：WiFi STA 固定 IP 192.168.1.10/24，gw 192.168.1.1
+# WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
+
+substitutions:
+  SIM_FIRMWARE_VER: "0.1.0"
+
+esphome:
+  name: iot-washer-sim
+  friendly_name: iot-washer-sim
+  on_boot:
+    priority: 200
+    then:
+      - lambda: |-
+          // 注冊 sim_ws_server callbacks：收到主板訊息時同步更新 sensor
+          id(sws).set_on_message_callback([](const std::string &msg) {
+            // 截斷長訊息以符合 text_sensor 上限
+            std::string trimmed = msg.size() > 240 ? msg.substr(0, 240) + "..." : msg;
+            id(last_rx_msg).publish_state(trimmed);
+          });
+          id(sws).set_on_connection_change_callback([](bool connected, const std::string &dev_id) {
+            id(ws_client_connected).publish_state(connected ? "yes" : "no");
+            id(ws_client_device_id).publish_state(dev_id);
+          });
+          // 注冊 sim_fsm UART2 RX byte callback：累積 hex dump 到 last_uart_rx
+          id(fsm).set_rx_byte_log_callback([](uint8_t b) {
+            static char buf[96];
+            static int pos = 0;
+            if (pos + 3 >= (int) sizeof(buf)) pos = 0;
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "%02X ", b);
+            id(last_uart_rx).publish_state(std::string(buf));
+          });
+          ESP_LOGI("INIT", "HuiFlow Washer Sim v${SIM_FIRMWARE_VER} booted");
+
+esp32:
+  board: esp32-s3-devkitc-1
+  # 與主板一致用 esp-idf framework（main task stack 16KB 避免 PC=0 crash）
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP_MAIN_TASK_STACK_SIZE: "16384"
+
+logger:
+  level: INFO
+  hardware_uart: USB_SERIAL_JTAG
+
+# 外部自訂元件（Phase 1：sim_fsm + sim_ws_server；Phase 3 會加 sim_assertion）
+external_components:
+  - source: my_components
+    components: [sim_fsm, sim_ws_server]
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # 禁用 AP fallback（模擬板一定在實驗室內網，連不上就自己重啟）
+  ap:
+    ssid: "washer-sim-fallback"
+    password: "12345678"
+    ap_timeout: 15s
+  manual_ip:
+    static_ip: 192.168.1.10
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+    dns1: 192.168.1.1
+    dns2: 8.8.8.8
+  power_save_mode: none
+  fast_connect: true
+
+# 模擬板 Dashboard：沿用 ESPHome web_server v2 + 自訂 JS
+web_server:
+  port: 80
+  version: 2
+  js_include: "web/sim_dashboard.js"
+  # 先不 include css，Phase 1 骨架只求能跑
+  # css_include: "web/sim_dashboard.css"
+
+ota:
+  - platform: esphome
+    password: ""
+
+safe_mode:
+  disabled: true
+
+# === 自訂元件實體 ===
+sim_fsm:
+  id: fsm
+  led_blue_pin: 6
+  led_green_pin: 7
+  led_red_pin: 8
+  uart_rx_pin: 15
+
+sim_ws_server:
+  id: sws
+  port: 8090
+
+# === Text sensors：Dashboard 顯示狀態 ===
+text_sensor:
+  - platform: template
+    name: "Firmware Version"
+    id: firmware_ver
+    lambda: |-
+      return std::string("${SIM_FIRMWARE_VER}");
+    update_interval: 60s
+
+  - platform: template
+    name: "Current LED"
+    id: current_led
+    lambda: |-
+      return std::string(id(fsm).led_name());
+    update_interval: 1s
+
+  - platform: template
+    name: "WS Client Connected"
+    id: ws_client_connected
+    # 由 on_connection_change callback 主動 publish_state（不用 lambda）
+    update_interval: never
+
+  - platform: template
+    name: "WS Client Device ID"
+    id: ws_client_device_id
+    update_interval: never
+
+  - platform: template
+    name: "Last RX Message"
+    id: last_rx_msg
+    update_interval: never
+
+  - platform: template
+    name: "Last UART RX Bytes"
+    id: last_uart_rx
+    update_interval: never
+
+# === Sensors：統計數字 ===
+sensor:
+  - platform: uptime
+    name: "Uptime"
+    id: sim_uptime
+    update_interval: 5s
+
+  - platform: template
+    name: "WS RX Frames"
+    lambda: 'return (float) id(sws).frames_rx();'
+    update_interval: 2s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "WS TX Frames"
+    lambda: 'return (float) id(sws).frames_tx();'
+    update_interval: 2s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "WS RX Bytes"
+    lambda: 'return (float) id(sws).bytes_rx();'
+    update_interval: 2s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "WS TX Bytes"
+    lambda: 'return (float) id(sws).bytes_tx();'
+    update_interval: 2s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Free Heap"
+    lambda: 'return (float) esp_get_free_heap_size();'
+    update_interval: 5s
+    accuracy_decimals: 0
+
+# === Buttons：Phase 1 手動切 LED + 發測試 CMD 給主板 ===
+button:
+  - platform: template
+    name: "LED → OFF"
+    id: btn_led_off
+    on_press:
+      - lambda: 'id(fsm).set_led(esphome::sim_fsm::SC_OFF);'
+
+  - platform: template
+    name: "LED → RED"
+    id: btn_led_red
+    on_press:
+      - lambda: 'id(fsm).set_led(esphome::sim_fsm::SC_RED);'
+
+  - platform: template
+    name: "LED → GREEN"
+    id: btn_led_green
+    on_press:
+      - lambda: 'id(fsm).set_led(esphome::sim_fsm::SC_GREEN);'
+
+  - platform: template
+    name: "LED → BLUE"
+    id: btn_led_blue
+    on_press:
+      - lambda: 'id(fsm).set_led(esphome::sim_fsm::SC_BLUE);'
+
+  - platform: template
+    name: "Send CMD status"
+    id: btn_send_cmd_status
+    on_press:
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+
+  - platform: template
+    name: "Send CMD reboot"
+    id: btn_send_cmd_reboot
+    on_press:
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"reboot\"}");'
+
+  - platform: template
+    name: "Send CMD wash_reset"
+    id: btn_send_cmd_wash_reset
+    on_press:
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_reset\"}");'
+
+  - platform: template
+    name: "Send CMD startwasher5"
+    id: btn_send_cmd_sw5
+    on_press:
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"startwasher5\"}");'
+
+  - platform: template
+    name: "Disconnect Client"
+    id: btn_disconnect
+    on_press:
+      - lambda: 'id(sws).disconnect_client("dashboard request");'
