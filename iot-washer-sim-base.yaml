@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.9.5"
+  SIM_FIRMWARE_VER: "0.9.6"
 
 esphome:
   name: iot-washer-sim

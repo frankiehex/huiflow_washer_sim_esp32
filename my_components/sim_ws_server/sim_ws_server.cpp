@@ -26,8 +26,9 @@ static const char *const WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // 應用層 PING 間隔（主板 expects {"type":"PING"} 並回 {"type":"PONG"}）
 static const uint32_t APP_PING_INTERVAL_MS = 5000;
 
-// 連線閒置 timeout（15s 無任何 RX → 主動斷線，測主板重連）
-static const uint32_t IDLE_TIMEOUT_MS = 15000;
+// 連線閒置 timeout — 主板 WS ping 10s 一次，給 30s buffer 容忍偶發網路抖動
+//   v0.9.6 從 15s 拉高到 30s（v4.0.74 主板偶發 ping 延遲超過 15s）
+static const uint32_t IDLE_TIMEOUT_MS = 30000;
 
 // Handshake HTTP headers 上限，超過視為惡意 client
 static const size_t MAX_HTTP_HEADER_BYTES = 4096;
@@ -180,6 +181,12 @@ void SimWsServerComponent::handle_client_rx_() {
     }
     if (!try_http_handshake_()) return;  // 等更多資料
     handshake_done_ = true;
+    // v0.9.6：拒絕空 device_id 的不明 client（避免 192.168.1.x 上其他設備掃 port）
+    if (client_device_id_.empty()) {
+      ESP_LOGW(TAG, "Reject client with empty device_id (likely junk scan)");
+      close_client_("empty device_id rejected");
+      return;
+    }
     ESP_LOGI(TAG, "Handshake OK, device_id='%s'", client_device_id_.c_str());
     if (on_conn_change_) on_conn_change_(true, client_device_id_);
     // handshake 後剩餘資料可能已是 WS frame 開頭，落入下面 while
