@@ -79,6 +79,9 @@ class SimWsServerComponent : public Component {
 
   // 接收緩衝（HTTP handshake + WS frames 共用，Phase 1 用簡單 growable string）
   std::string rx_accum_;
+  // Phase 8.3：rx_accum_ 進度追蹤，無進度 + 有資料 → 視為 stale 半開連線
+  size_t rx_accum_last_size_ = 0;
+  uint32_t rx_accum_last_progress_ms_ = 0;
 
   OnMessageCb on_message_ = nullptr;
   OnConnectionChangeCb on_conn_change_ = nullptr;

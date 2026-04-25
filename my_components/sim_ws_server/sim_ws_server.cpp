@@ -108,6 +108,22 @@ void SimWsServerComponent::loop() {
     if (last_rx_ms_ && (now - last_rx_ms_ > IDLE_TIMEOUT_MS)) {
       close_client_("idle timeout");
     }
+    // Phase 8.3：rx_accum 進度檢查（無新資料 + 累積非空 → stale 半開）
+    //   每次 loop() 都執行（即使沒有 recv 進來）
+    if (!rx_accum_.empty()) {
+      if (rx_accum_.size() != rx_accum_last_size_) {
+        rx_accum_last_size_ = rx_accum_.size();
+        rx_accum_last_progress_ms_ = now;
+      } else if (rx_accum_last_progress_ms_ != 0 &&
+                 (now - rx_accum_last_progress_ms_) > 5000) {
+        ESP_LOGW(TAG, "rx_accum stalled %u bytes for >5s, forcing reconnect",
+                 (unsigned) rx_accum_.size());
+        close_client_("rx_accum no-progress 5s");
+      }
+    } else {
+      rx_accum_last_size_ = 0;
+      rx_accum_last_progress_ms_ = now;
+    }
   }
 }
 
@@ -183,7 +199,9 @@ void SimWsServerComponent::handle_client_rx_() {
     ESP_LOGW(TAG, "rx_accum stuck at %u bytes (frames_parsed=%u this round), forcing reconnect",
              (unsigned) rx_accum_.size(), (unsigned) frames_parsed);
     close_client_("rx_accum stuck >16KB");
+    return;
   }
+
 }
 
 bool SimWsServerComponent::try_http_handshake_() {
