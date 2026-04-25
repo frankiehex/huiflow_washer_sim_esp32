@@ -63,6 +63,12 @@
     .btn.led-blue { background: #1f2c4a; border-color: #4488dd; }
     .btn.led-off { background: #2a2a2a; border-color: #555; }
 
+    /* Toggle switch (用 button 模擬，看 state class) */
+    .btn.toggle-on { background: #1f5f3f; border-color: #4ade80; color: #c8f7d8; }
+    .btn.toggle-on::before { content: "✓ "; }
+    .btn.toggle-off::before { content: "○ "; }
+    .btn.toggle-off { background: #2a3142; }
+
     /* 狀態 chip */
     .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
     .chip { display: inline-flex; align-items: center; gap: 6px;
@@ -170,8 +176,18 @@
     ],
   };
 
+  // 模擬 Server 心跳 toggle switches（不是 button 是 switch）
+  const SWITCHES = {
+    server: [
+      ['Online Heartbeat (60s)', 'online_heartbeat__60s_'],
+    ],
+  };
+
   function press(objId) {
     fetch(`/button/${objId}/press`, {method: 'POST', headers: {'Content-Length': '0'}});
+  }
+  function toggleSwitch(objId) {
+    fetch(`/switch/${objId}/toggle`, {method: 'POST', headers: {'Content-Length': '0'}});
   }
 
   function makeBtn(label, objId, klass) {
@@ -207,6 +223,7 @@
       <div class="chips" id="sim-chips"></div>
 
       <div class="panels">
+        <div class="panel"><h3>模擬 Server 心跳</h3><div class="btn-row" id="bp-server"></div></div>
         <div class="panel"><h3>Manual LED</h3><div class="btn-row" id="bp-led"></div></div>
         <div class="panel"><h3>送 CMD 給主板</h3><div class="btn-row" id="bp-cmd"></div></div>
         <div class="panel"><h3>Scenario 引擎</h3><div class="btn-row" id="bp-scenario"></div></div>
@@ -256,6 +273,20 @@
       if (!container) continue;
       for (const [label, objId, klass] of list) {
         container.appendChild(makeBtn(label, objId, klass));
+      }
+    }
+    // 渲染 switch toggles
+    for (const [key, list] of Object.entries(SWITCHES)) {
+      const container = document.getElementById('bp-' + key);
+      if (!container) continue;
+      for (const [label, swId] of list) {
+        const b = document.createElement('button');
+        b.className = 'btn toggle-off';
+        b.dataset.swId = swId;
+        b.dataset.swLabel = label;
+        b.textContent = label;
+        b.onclick = () => toggleSwitch(swId);
+        container.appendChild(b);
       }
     }
 
@@ -308,6 +339,17 @@
 
   function updateEntity(id, value) {
     const $ = (i) => document.getElementById(i);
+    // Switch state 統一處理（任何 switch-* 都同步到對應 toggle button）
+    if (id.startsWith('switch-')) {
+      const swId = id.substring(7);
+      const btns = document.querySelectorAll(`button[data-sw-id="${swId}"]`);
+      const on = value === 'ON' || value === 'true' || value === 'on';
+      btns.forEach(b => {
+        b.classList.remove('toggle-on', 'toggle-off');
+        b.classList.add(on ? 'toggle-on' : 'toggle-off');
+      });
+      return;
+    }
     switch (id) {
       case 'text_sensor-firmware_version':
         if ($('sv-fw')) $('sv-fw').textContent = value || '--';

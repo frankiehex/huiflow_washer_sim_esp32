@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.10.2"
+  SIM_FIRMWARE_VER: "0.10.4"
 
 esphome:
   name: iot-washer-sim
@@ -863,16 +863,30 @@ button:
           id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"reboot\"}");
 
 # === Phase 3：故障注入機率 number sliders ===
-# Phase 9.2：自動定期 health check（每 5 分鐘背景跑，degraded 自動恢復）
+# v0.10.3：移除自動定期 health check
+# v0.10.2 修好 frame atomic send 後連線已穩定，不需要每 5 分鐘自動轟主板 10 個 CMD status。
+# 用戶反映「不要一直對我送 Status」→ health check 改純手動（按鈕 "Run WS Health Check"）
+
+# v0.10.4：Online Heartbeat（switch 勾選時每 60s 送 {"cmd":"online"} 模擬 Server 在線）
+# 主板 90s timeout，60s 間隔有 30s 安全 buffer
+switch:
+  - platform: template
+    name: "Online Heartbeat (60s)"
+    id: online_heartbeat
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+
 interval:
-  - interval: 300s
-    startup_delay: 60s
+  - interval: 60s
+    startup_delay: 10s
     then:
       - if:
           condition:
-            lambda: 'return id(sws).is_client_connected();'
+            and:
+              - lambda: 'return id(online_heartbeat).state;'
+              - lambda: 'return id(sws).is_client_connected();'
           then:
-            - script.execute: run_ws_health
+            - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"online\"}");'
 
 number:
   - platform: template
