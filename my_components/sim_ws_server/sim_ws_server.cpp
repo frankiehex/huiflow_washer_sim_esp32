@@ -403,50 +403,45 @@ bool SimWsServerComponent::try_parse_one_frame_() {
 bool SimWsServerComponent::send_ws_frame_(uint8_t opcode, const uint8_t *data, size_t len) {
   if (client_fd_ < 0) return false;
 
-  uint8_t hdr[4];
+  // v0.10.2：header + payload 合成單一 buffer，單次 send() 送出
+  //   舊版分兩次 send：主板 client 接收時若 header 已到但 payload 未到，
+  //   recv 在 non-blocking socket 上會 EAGAIN → 主板把 EAGAIN 當 read error
+  //   → 連線立刻 disconnect。每 5s 一次 PING 就是這個原因被踢掉。
+  //   合成一個 buffer 確保主板一次 recv 拿到完整 frame。
+  static uint8_t out[8200];   // 8KB payload + 4 byte header 上限（與 MAX_WS_PAYLOAD_BYTES 對齊）
   size_t hdr_len = 0;
-  hdr[0] = 0x80 | (opcode & 0x0F);  // FIN=1
+  out[0] = 0x80 | (opcode & 0x0F);  // FIN=1
   if (len < 126) {
-    hdr[1] = (uint8_t) len;  // Server→Client 不 mask
+    out[1] = (uint8_t) len;  // Server→Client 不 mask
     hdr_len = 2;
   } else {
-    hdr[1] = 126;
-    hdr[2] = (len >> 8) & 0xFF;
-    hdr[3] = len & 0xFF;
+    out[1] = 126;
+    out[2] = (len >> 8) & 0xFF;
+    out[3] = len & 0xFF;
     hdr_len = 4;
   }
+  if (hdr_len + len > sizeof(out)) {
+    close_client_("frame too large for out buffer");
+    return false;
+  }
+  if (len > 0) memcpy(out + hdr_len, data, len);
 
-  // 送 header
+  // 單次 send（lwIP 會把整個 buffer 包進一個 TCP segment 若 < MTU）
+  size_t total = hdr_len + len;
   size_t sent = 0;
-  while (sent < hdr_len) {
-    ssize_t r = ::send(client_fd_, hdr + sent, hdr_len - sent, 0);
+  while (sent < total) {
+    ssize_t r = ::send(client_fd_, out + sent, total - sent, 0);
     if (r <= 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         delay(2);
         continue;
       }
-      close_client_("send hdr fail");
+      close_client_("send fail");
       return false;
     }
     sent += r;
   }
-  stats_tx_bytes_ += hdr_len;
-
-  // 送 payload
-  sent = 0;
-  while (sent < len) {
-    ssize_t r = ::send(client_fd_, data + sent, len - sent, 0);
-    if (r <= 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        delay(2);
-        continue;
-      }
-      close_client_("send payload fail");
-      return false;
-    }
-    sent += r;
-  }
-  stats_tx_bytes_ += len;
+  stats_tx_bytes_ += total;
   stats_tx_frames_++;
   return true;
 }
