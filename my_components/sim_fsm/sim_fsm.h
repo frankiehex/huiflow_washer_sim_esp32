@@ -51,6 +51,13 @@ using OnFsmStateCb = std::function<void(const char *event_name, const std::strin
 //   starting = true 進新輪，false = 該輪 scenario 結束
 using OnBatchRoundCb = std::function<void(uint32_t round_idx, bool starting)>;
 
+// Phase 7：UART2 burst 完成時觸發（5 個 frame 在 ~600ms 內到達）
+//   cmd: 對應指令
+//   count: 實際收到的 frame 數（理想值 5）
+//   span_ms: 第一筆到最後一筆耗時
+//   intervals_ok: 所有 interval 都在 60~150ms 之間
+using OnBurstCompleteCb = std::function<void(WasherCmd cmd, uint8_t count, uint32_t span_ms, bool intervals_ok)>;
+
 class SimFsmComponent : public Component {
  public:
   float get_setup_priority() const override { return setup_priority::LATE; }
@@ -66,6 +73,7 @@ class SimFsmComponent : public Component {
   void set_on_washer_cmd_callback(OnWasherCmdCb cb) { cmd_cb_ = std::move(cb); }
   void set_on_fsm_state_callback(OnFsmStateCb cb) { state_cb_ = std::move(cb); }
   void set_on_batch_round_callback(OnBatchRoundCb cb) { batch_round_cb_ = std::move(cb); }
+  void set_on_burst_complete_callback(OnBurstCompleteCb cb) { burst_cb_ = std::move(cb); }
 
   void setup() override;
   void loop() override;
@@ -123,6 +131,16 @@ class SimFsmComponent : public Component {
   OnWasherCmdCb cmd_cb_ = nullptr;
   OnFsmStateCb state_cb_ = nullptr;
   OnBatchRoundCb batch_round_cb_ = nullptr;
+  OnBurstCompleteCb burst_cb_ = nullptr;
+
+  // Phase 7：UART2 burst tracking
+  WasherCmd burst_cmd_ = WC_NONE;
+  uint8_t burst_count_ = 0;
+  uint32_t burst_first_ms_ = 0;
+  uint32_t burst_last_ms_ = 0;
+  uint32_t burst_max_interval_ = 0;
+  uint32_t burst_min_interval_ = UINT32_MAX;
+  // burst 視窗 600ms：第一筆後 600ms 自動結束、emit complete event
 
   // === UART2 RX frame parser state machine ===
   // 7-byte frame: FD 03 C7 50 <CMD> <CHK> DF

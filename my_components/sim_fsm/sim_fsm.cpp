@@ -133,6 +133,16 @@ void SimFsmComponent::loop() {
     last_rx_poll_ms_ = now;
     poll_uart_rx_();
   }
+  // Phase 7：burst 視窗 1s 後沒新 frame → flush 不完整 burst
+  if (burst_cmd_ != WC_NONE && burst_count_ > 0 &&
+      (now - burst_last_ms_) > 1000) {
+    uint32_t span = burst_last_ms_ - burst_first_ms_;
+    bool intervals_ok = (burst_count_ == 5) &&
+                        (burst_min_interval_ >= 60 && burst_max_interval_ <= 150);
+    if (burst_cb_) burst_cb_(burst_cmd_, burst_count_, span, intervals_ok);
+    burst_cmd_ = WC_NONE;
+    burst_count_ = 0;
+  }
   // Phase 3：fault injection（蓋過 scenario 的 LED 控制）
   if (fault_active_) {
     tick_fault_();
@@ -230,6 +240,41 @@ void SimFsmComponent::feed_parser_byte_(uint8_t b) {
 
 void SimFsmComponent::dispatch_washer_cmd_(WasherCmd cmd) {
   const uint32_t now = millis();
+
+  // Phase 7：burst tracking（不受 dedupe 影響，記錄所有 raw frame）
+  // 規則：第一筆開啟 burst 視窗，後續同 cmd 計數 + 記錄 interval
+  //       到 600ms 後 emit burst_complete 事件（不論收幾筆）
+  if (burst_cmd_ != cmd) {
+    // 新 cmd 進入 → flush 上一個 burst（若有）
+    if (burst_cmd_ != WC_NONE && burst_count_ > 0) {
+      uint32_t span = burst_last_ms_ - burst_first_ms_;
+      bool intervals_ok = (burst_min_interval_ >= 60 && burst_max_interval_ <= 150) ||
+                          burst_count_ <= 1;
+      if (burst_cb_) burst_cb_(burst_cmd_, burst_count_, span, intervals_ok);
+    }
+    burst_cmd_ = cmd;
+    burst_count_ = 1;
+    burst_first_ms_ = now;
+    burst_last_ms_ = now;
+    burst_max_interval_ = 0;
+    burst_min_interval_ = UINT32_MAX;
+  } else {
+    // 同 cmd 持續到達
+    uint32_t interval = now - burst_last_ms_;
+    if (interval > burst_max_interval_) burst_max_interval_ = interval;
+    if (interval < burst_min_interval_) burst_min_interval_ = interval;
+    burst_last_ms_ = now;
+    burst_count_++;
+    // 到第 5 筆時立即 emit
+    if (burst_count_ == 5) {
+      uint32_t span = burst_last_ms_ - burst_first_ms_;
+      bool intervals_ok = (burst_min_interval_ >= 60 && burst_max_interval_ <= 150);
+      if (burst_cb_) burst_cb_(burst_cmd_, burst_count_, span, intervals_ok);
+      // 標記已 emit，後續同 cmd 不再累計（直到下個新 cmd 或 600ms 後）
+      burst_cmd_ = WC_NONE;
+    }
+  }
+
   // 主板連發 5 次、每次間隔 100ms（共 ~400ms 窗口）
   // 同一 cmd 在 500ms 內重複到達 → 只派發第一次
   if (cmd == last_cmd_ && (now - last_cmd_dispatch_ms_) < 500) {

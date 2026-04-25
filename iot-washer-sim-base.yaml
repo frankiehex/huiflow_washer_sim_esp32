@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.6.0"
+  SIM_FIRMWARE_VER: "0.7.0"
 
 esphome:
   name: iot-washer-sim
@@ -109,6 +109,23 @@ esphome:
           // Phase 2：UART2 完整 frame 解完時推 last_washer_cmd
           id(fsm).set_on_washer_cmd_callback([](esphome::sim_fsm::WasherCmd cmd) {
             id(last_washer_cmd).publish_state(std::string(esphome::sim_fsm::washer_cmd_name(cmd)));
+          });
+          // Phase 7：UART2 burst 完成 → A7 assertion
+          id(fsm).set_on_burst_complete_callback([](esphome::sim_fsm::WasherCmd cmd, uint8_t count,
+                                                   uint32_t span_ms, bool intervals_ok) {
+            // expect 立即 → observe 立即（同步邏輯，記入結果）
+            id(asrt).expect_event("A7", "uart_burst", "", -1, 100);
+            char buf[128];
+            snprintf(buf, sizeof(buf), "uart_burst cmd=%s count=%u span=%ums intervals_ok=%d",
+                     esphome::sim_fsm::washer_cmd_name(cmd), (unsigned) count,
+                     (unsigned) span_ms, (int) intervals_ok);
+            id(uart_burst_last).publish_state(std::string(buf));
+            // 條件 pass：count==5 && intervals_ok
+            if (count == 5 && intervals_ok) {
+              id(asrt).observe_event("uart_burst", "", -1, -1);
+            } else {
+              // 故意不 observe，讓 100ms 後 timeout 計 fail
+            }
           });
           // Phase 2：scenario 狀態變化推 fsm_last_event（Dashboard 顯示進度）
           // Phase 3：每次 led_change 同時對 sim_assertion 宣告期待
@@ -324,6 +341,12 @@ text_sensor:
     id: assertion_per_rule
     lambda: 'return id(asrt).per_rule_summary();'
     update_interval: 2s
+
+  # Phase 7：UART2 burst 最近一筆描述
+  - platform: template
+    name: "UART Burst Last"
+    id: uart_burst_last
+    update_interval: never
 
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
   - platform: template
