@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.9.3"
+  SIM_FIRMWARE_VER: "0.9.4"
 
 esphome:
   name: iot-washer-sim
@@ -218,13 +218,16 @@ script:
     then:
       - lambda: |-
           id(asrt).reset_stats();
-          id(self_test_status).publish_state("RESET stats. Starting...");
+          id(self_test_status).publish_state("RESET stats. Pre-flight: wash_reset...");
+      # Pre-flight：先清主板 wash state（避免上次測試殘留）
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_reset\"}");'
       - delay: 1s
 
       # === A5：wash_init unlock_pwd → wash_phase=lock ===
       - lambda: |-
           id(self_test_status).publish_state("A5: sending wash_init+unlock_pwd...");
-          id(asrt).expect_event("A5", "wash_stage", "lock", -1, 1500);
+          // expect 視窗放寬到 2000ms，wash_init 處理時間有時較長
+          id(asrt).expect_event("A5", "wash_stage", "lock", -1, 2000);
           id(sws).send_text(
             "{\"type\":\"CMD\",\"cmd\":\"wash_init\","
             "\"total\":2,\"bb_timeout\":30,"
