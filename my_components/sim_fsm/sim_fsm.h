@@ -1,6 +1,8 @@
 // HuiFlow 洗車機模擬板 — sim_fsm
-// Phase 1 骨架：LED GPIO 控制 + UART2 RX byte 原始 log（不 parse frame）
-// Phase 2 擴充：scenario 腳本、UART2 frame parser、故障注入器
+// Phase 2：LED GPIO + UART2 frame parser（7-byte WASHER_TABLE）+ scenario 引擎
+// UART2 frame 格式（主板 ws_client.cpp:77-88 WASHER_TABLE）：
+//   FD 03 C7 50 <CMD> <CHK> DF
+// 10 個 CMD byte → startwasher1~6 / gowasher / resetwasher / hardresetwasher / sparewasher
 #pragma once
 
 #include "esphome/core/component.h"
@@ -20,8 +22,30 @@ enum SimColor : uint8_t {
   SC_BLUE = 3,
 };
 
-// UART2 byte 原始 log callback（交給 WS server / dashboard 顯示）
+// UART2 洗車機指令（對應 main board WASHER_TABLE 索引）
+enum WasherCmd : uint8_t {
+  WC_NONE = 0xFF,
+  WC_STARTWASHER1 = 0,
+  WC_STARTWASHER2 = 1,
+  WC_STARTWASHER3 = 2,
+  WC_STARTWASHER4 = 3,
+  WC_STARTWASHER5 = 4,
+  WC_STARTWASHER6 = 5,
+  WC_GOWASHER = 6,
+  WC_RESETWASHER = 7,
+  WC_HARDRESETWASHER = 8,
+  WC_SPAREWASHER = 9,
+};
+
+const char *washer_cmd_name(WasherCmd cmd);
+
+// === Callbacks ===
+// UART2 原始 byte（方便 Dashboard 顯示 hex dump）
 using RxByteLogCb = std::function<void(uint8_t byte_val)>;
+// UART2 7-byte frame 完整解完（已 dedupe 5 次連發）
+using OnWasherCmdCb = std::function<void(WasherCmd cmd)>;
+// 每次 FSM 狀態變化（LED 色 / scenario step 前進）
+using OnFsmStateCb = std::function<void(const char *event_name, const std::string &detail)>;
 
 class SimFsmComponent : public Component {
  public:
@@ -32,21 +56,36 @@ class SimFsmComponent : public Component {
     pin_green_ = green;
     pin_red_ = red;
   }
-
   void set_uart_rx_pin(int rx) { pin_uart_rx_ = rx; }
 
-  // 外部訂閱 UART2 RX byte 事件（WS server 用來廣播、Dashboard 用來顯示）
   void set_rx_byte_log_callback(RxByteLogCb cb) { rx_cb_ = std::move(cb); }
+  void set_on_washer_cmd_callback(OnWasherCmdCb cb) { cmd_cb_ = std::move(cb); }
+  void set_on_fsm_state_callback(OnFsmStateCb cb) { state_cb_ = std::move(cb); }
 
   void setup() override;
   void loop() override;
 
-  // Phase 1 公開 API：手動切 LED（Dashboard 3 個按鈕呼叫）
+  // === Phase 1 公開 API ===
   void set_led(SimColor c);
   SimColor get_led() const { return current_color_; }
-
-  // 回傳當前 LED 顏色字串（給 Dashboard 顯示 / sensor）
   const char *led_name() const;
+
+  // === Phase 2：scenario 引擎 ===
+  // 啟動指定 scenario（SW5 / SW6），speed_factor 範圍 0.1~1.0（壓縮時間）
+  bool start_scenario(const char *scenario_name, float speed_factor);
+  // 手動停止 scenario（中途取消）
+  void stop_scenario();
+  // 查詢狀態
+  bool scenario_running() const { return scenario_ != nullptr; }
+  const char *scenario_name() const;
+  int scenario_step() const { return scenario_step_idx_; }   // 1-based 當前步驟
+  int scenario_total() const;                                // 總步驟數
+  uint32_t scenario_run_id() const { return scenario_run_id_; }
+
+  // 統計
+  uint32_t total_scenarios_run() const { return stats_total_runs_; }
+  uint32_t total_cmds_received() const { return stats_total_cmds_; }
+  WasherCmd last_cmd_received() const { return last_cmd_; }
 
  protected:
   int pin_blue_ = -1;
@@ -56,12 +95,54 @@ class SimFsmComponent : public Component {
 
   SimColor current_color_ = SC_OFF;
   RxByteLogCb rx_cb_ = nullptr;
+  OnWasherCmdCb cmd_cb_ = nullptr;
+  OnFsmStateCb state_cb_ = nullptr;
 
-  // UART2 RX 讀取節流
+  // === UART2 RX frame parser state machine ===
+  // 7-byte frame: FD 03 C7 50 <CMD> <CHK> DF
+  enum ParserState : uint8_t {
+    PS_WAIT_FD = 0,
+    PS_WAIT_03,
+    PS_WAIT_C7,
+    PS_WAIT_50,
+    PS_WAIT_CMD,
+    PS_WAIT_CHK,
+    PS_WAIT_DF,
+  };
+  ParserState parser_state_ = PS_WAIT_FD;
+  uint8_t pending_cmd_ = 0;
+  uint8_t pending_chk_ = 0;
+
+  // Dedupe 5 次連發：同一 CMD 在 500ms 內重複到達 → 只派發第一次
+  WasherCmd last_cmd_ = WC_NONE;
+  uint32_t last_cmd_dispatch_ms_ = 0;
+
+  // 輪詢 UART2 RX 節流
   uint32_t last_rx_poll_ms_ = 0;
 
+  // === Scenario 引擎 ===
+  const void *scenario_ = nullptr;     // 指向 Scenario struct（避免 forward decl）
+  int scenario_step_idx_ = 0;          // 0-based 內部索引
+  uint32_t scenario_step_enter_ms_ = 0;
+  uint32_t scenario_step_dwell_ms_ = 0; // 計算後的實際 dwell（含 speed_factor）
+  float scenario_speed_factor_ = 1.0f;
+  bool scenario_waiting_gowasher_ = false;
+  uint32_t scenario_run_id_ = 0;       // 每次 start_scenario 遞增
+  uint32_t scenario_start_ms_ = 0;
+
+  // 統計
+  uint32_t stats_total_runs_ = 0;
+  uint32_t stats_total_cmds_ = 0;
+
+  // 內部工具
   void apply_led_outputs_();
   void poll_uart_rx_();
+  void feed_parser_byte_(uint8_t b);
+  void dispatch_washer_cmd_(WasherCmd cmd);
+  void tick_scenario_();
+  void advance_scenario_step_();
+  void finish_scenario_();
+  void emit_state_(const char *ev, const std::string &detail);
 };
 
 }  // namespace sim_fsm

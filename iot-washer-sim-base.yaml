@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.1.0"
+  SIM_FIRMWARE_VER: "0.2.0"
 
 esphome:
   name: iot-washer-sim
@@ -29,13 +29,39 @@ esphome:
             id(ws_client_connected).publish_state(connected ? "yes" : "no");
             id(ws_client_device_id).publish_state(dev_id);
           });
-          // 注冊 sim_fsm UART2 RX byte callback：累積 hex dump 到 last_uart_rx
+          // Phase 2：主板每筆 EVENT/STATUS 解析後 → 推到對應 text_sensor
+          id(sws).set_on_parsed_event_callback([](const esphome::sim_ws_server::ParsedEvent &ev) {
+            if (ev.type == "EVENT") {
+              id(last_event_name).publish_state(ev.event_name);
+            }
+            if (!ev.wash_phase.empty()) {
+              id(main_wash_phase).publish_state(ev.wash_phase);
+            }
+            if (ev.wash_stage >= 0 && ev.wash_total > 0) {
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%d/%d", ev.wash_stage, ev.wash_total);
+              id(main_wash_step).publish_state(std::string(buf));
+            } else if (ev.wash_total == 0) {
+              id(main_wash_step).publish_state(std::string("reset"));
+            }
+          });
+          // 注冊 sim_fsm UART2 RX byte callback：累積 hex dump（最近 20 byte）
           id(fsm).set_rx_byte_log_callback([](uint8_t b) {
             static char buf[96];
             static int pos = 0;
             if (pos + 3 >= (int) sizeof(buf)) pos = 0;
             pos += snprintf(buf + pos, sizeof(buf) - pos, "%02X ", b);
             id(last_uart_rx).publish_state(std::string(buf));
+          });
+          // Phase 2：UART2 完整 frame 解完時推 last_washer_cmd
+          id(fsm).set_on_washer_cmd_callback([](esphome::sim_fsm::WasherCmd cmd) {
+            id(last_washer_cmd).publish_state(std::string(esphome::sim_fsm::washer_cmd_name(cmd)));
+          });
+          // Phase 2：scenario 狀態變化推 fsm_last_event（Dashboard 顯示進度）
+          id(fsm).set_on_fsm_state_callback([](const char *ev, const std::string &detail) {
+            std::string s = std::string(ev) + ": " + detail;
+            if (s.size() > 200) s = s.substr(0, 200) + "...";
+            id(fsm_last_event).publish_state(s);
           });
           ESP_LOGI("INIT", "HuiFlow Washer Sim v${SIM_FIRMWARE_VER} booted");
 
@@ -92,10 +118,17 @@ safe_mode:
 # === 自訂元件實體 ===
 sim_fsm:
   id: fsm
-  led_blue_pin: 6
-  led_green_pin: 7
-  led_red_pin: 8
-  uart_rx_pin: 15
+  # 腳位完全對齊主板（杜邦線 sim N ↔ main N 直通）：
+  #   sim GPIO 21 OUT → main GPIO 21 IN (washer_led_blue)
+  #   sim GPIO 47 OUT → main GPIO 47 IN (washer_led_green)
+  #   sim GPIO 35 OUT → main GPIO 35 IN (washer_led_red)
+  #   sim GPIO  1 IN  ← main GPIO  1 OUT (UART2 TX 9600 8N1)
+  # 注意：GPIO 35 必須不設 flash_size: 16MB（否則被 PSRAM 鎖）
+  #       GPIO  1 是 U0RXD 但用 USB_SERIAL_JTAG logger 不衝突
+  led_blue_pin: 21
+  led_green_pin: 47
+  led_red_pin: 35
+  uart_rx_pin: 1
 
 sim_ws_server:
   id: sws
@@ -145,6 +178,50 @@ text_sensor:
   - platform: template
     name: "Last UART RX Bytes"
     id: last_uart_rx
+    update_interval: never
+
+  # Phase 2：UART2 frame parser 解出的最後一個指令（startwasher5 / gowasher 等）
+  - platform: template
+    name: "Last Washer CMD"
+    id: last_washer_cmd
+    update_interval: never
+
+  # Phase 2：Scenario 狀態變化事件（scenario_start / scenario_step / scenario_finish / led_change）
+  - platform: template
+    name: "FSM Last Event"
+    id: fsm_last_event
+    update_interval: never
+
+  - platform: template
+    name: "Scenario Name"
+    id: scenario_name
+    lambda: 'return std::string(id(fsm).scenario_name());'
+    update_interval: 1s
+
+  - platform: template
+    name: "Scenario Step"
+    id: scenario_step
+    lambda: |-
+      if (id(fsm).scenario_total() == 0) return std::string("-");
+      char buf[16];
+      snprintf(buf, sizeof(buf), "%d/%d", id(fsm).scenario_step(), id(fsm).scenario_total());
+      return std::string(buf);
+    update_interval: 1s
+
+  # Phase 2：主板回傳的 EVENT 解析結果（給 Dashboard 即時看主板狀態）
+  - platform: template
+    name: "Main Last Event"
+    id: last_event_name
+    update_interval: never
+
+  - platform: template
+    name: "Main Wash Phase"
+    id: main_wash_phase
+    update_interval: never
+
+  - platform: template
+    name: "Main Wash Step"
+    id: main_wash_step
     update_interval: never
 
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
@@ -200,6 +277,18 @@ sensor:
     name: "Free Heap"
     lambda: 'return (float) esp_get_free_heap_size();'
     update_interval: 5s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Scenarios Run"
+    lambda: 'return (float) id(fsm).total_scenarios_run();'
+    update_interval: 2s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "UART CMDs Received"
+    lambda: 'return (float) id(fsm).total_cmds_received();'
+    update_interval: 2s
     accuracy_decimals: 0
 
 # === Buttons：Phase 1 手動切 LED + 發測試 CMD 給主板 ===
@@ -263,3 +352,38 @@ button:
     id: btn_check_ota
     on_press:
       - lambda: 'id(sim_ota).check_for_update();'
+
+  # === Phase 2：scenario 引擎控制 ===
+  - platform: template
+    name: "Run SW5 @0.1x"
+    id: btn_run_sw5_fast
+    on_press:
+      - lambda: |-
+          // 先送 CMD 給主板，讓主板 wash_init 並派發 UART2 startwasher5
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"startwasher5\"}");
+          // 再啟動本地 scenario（LED 壓縮到 0.1x 速度）
+          id(fsm).start_scenario("SW5", 0.1f);
+
+  - platform: template
+    name: "Run SW5 @1.0x"
+    id: btn_run_sw5_slow
+    on_press:
+      - lambda: |-
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"startwasher5\"}");
+          id(fsm).start_scenario("SW5", 1.0f);
+
+  - platform: template
+    name: "Run SW6 @0.1x"
+    id: btn_run_sw6_fast
+    on_press:
+      - lambda: |-
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"startwasher6\"}");
+          id(fsm).start_scenario("SW6", 0.1f);
+
+  - platform: template
+    name: "Stop Scenario"
+    id: btn_stop_scenario
+    on_press:
+      - lambda: |-
+          id(fsm).stop_scenario();
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_reset\"}");

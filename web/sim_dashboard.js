@@ -30,10 +30,12 @@
       <strong>WASHER SIM</strong>
       <span>LED: <span id="sim-led" style="font-weight:bold">--</span></span>
       <span>WS Client: <span id="sim-ws" style="font-weight:bold">--</span></span>
-      <span>Device ID: <span id="sim-dev">--</span></span>
-      <span>RX: <span id="sim-rx">0</span> frames</span>
-      <span>TX: <span id="sim-tx">0</span> frames</span>
-      <span>Last RX: <span id="sim-last" style="color:#8af">--</span></span>
+      <span>Scenario: <span id="sim-scn" style="font-weight:bold">idle</span> <span id="sim-scn-step">-</span></span>
+      <span>Main Phase: <span id="sim-mphase" style="font-weight:bold;color:#fa3">--</span> <span id="sim-mstep">-</span></span>
+      <span>Last EVENT: <span id="sim-mev" style="color:#8f8">--</span></span>
+      <span>Last UART CMD: <span id="sim-ucmd" style="color:#fc6">--</span></span>
+      <span>RX: <span id="sim-rx">0</span></span>
+      <span>TX: <span id="sim-tx">0</span></span>
     `;
     const body = document.body;
     if (body.firstChild) body.insertBefore(bar, body.firstChild);
@@ -82,9 +84,37 @@
         if (el) el.textContent = String(Math.round(Number(value) || 0));
         break;
       }
-      case 'text_sensor-last_rx_message': {
-        const el = document.getElementById('sim-last');
-        if (el) el.textContent = (value || '--').slice(0, 80);
+      case 'text_sensor-scenario_name': {
+        const el = document.getElementById('sim-scn');
+        if (el) el.textContent = value || 'idle';
+        break;
+      }
+      case 'text_sensor-scenario_step': {
+        const el = document.getElementById('sim-scn-step');
+        if (el) el.textContent = value || '-';
+        break;
+      }
+      case 'text_sensor-main_wash_phase': {
+        const el = document.getElementById('sim-mphase');
+        if (el) {
+          el.textContent = (value || '--').toUpperCase();
+          el.style.color = LED_COLORS[value] || '#fa3';
+        }
+        break;
+      }
+      case 'text_sensor-main_wash_step': {
+        const el = document.getElementById('sim-mstep');
+        if (el) el.textContent = value || '-';
+        break;
+      }
+      case 'text_sensor-main_last_event': {
+        const el = document.getElementById('sim-mev');
+        if (el) el.textContent = value || '--';
+        break;
+      }
+      case 'text_sensor-last_washer_cmd': {
+        const el = document.getElementById('sim-ucmd');
+        if (el) el.textContent = value || '--';
         break;
       }
     }

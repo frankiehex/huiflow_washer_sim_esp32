@@ -20,6 +20,21 @@ using OnMessageCb = std::function<void(const std::string &msg)>;
 // 連線狀態變化通知（Dashboard 顯示主板 online/offline）
 using OnConnectionChangeCb = std::function<void(bool connected, const std::string &device_id)>;
 
+// Phase 2: 主板 EVENT 解析後（已抽出 type/event/wash_phase 等核心欄位）
+// type 是 "EVENT" / "STATUS" / "CMD_RESULT" 之一
+// event_name 是 "wash_stage" / "wash_unlock" / "washer_status" 等（STATUS 時為空）
+// wash_phase 是 "idle"/"green"/"blue"/"red"/"done"/"nopower"/"lock"（無則空）
+// raw 完整 JSON（供深度檢查）
+struct ParsedEvent {
+  std::string type;
+  std::string event_name;
+  std::string wash_phase;
+  int wash_stage = -1;
+  int wash_total = -1;
+  std::string raw;
+};
+using OnParsedEventCb = std::function<void(const ParsedEvent &ev)>;
+
 class SimWsServerComponent : public Component {
  public:
   // setup_priority::AFTER_WIFI 確保 WiFi 起來後才開 listen socket
@@ -30,9 +45,10 @@ class SimWsServerComponent : public Component {
   void setup() override;
   void loop() override;
 
-  // 外部訂閱：收到主板訊息 / 連線狀態變化
+  // 外部訂閱：收到主板訊息 / 連線狀態變化 / 解析後 EVENT
   void set_on_message_callback(OnMessageCb cb) { on_message_ = std::move(cb); }
   void set_on_connection_change_callback(OnConnectionChangeCb cb) { on_conn_change_ = std::move(cb); }
+  void set_on_parsed_event_callback(OnParsedEventCb cb) { on_parsed_event_ = std::move(cb); }
 
   // 對主板送 text frame（JSON）
   // 回傳 true=送出成功，false=無 client 或 send 失敗
@@ -66,6 +82,7 @@ class SimWsServerComponent : public Component {
 
   OnMessageCb on_message_ = nullptr;
   OnConnectionChangeCb on_conn_change_ = nullptr;
+  OnParsedEventCb on_parsed_event_ = nullptr;
 
   // 統計
   uint32_t stats_rx_bytes_ = 0;
@@ -84,6 +101,7 @@ class SimWsServerComponent : public Component {
   static std::string compute_accept_key_(const std::string &ws_key);
   void close_client_(const char *reason);
   void send_app_ping_();
+  void parse_and_dispatch_event_(const std::string &payload);
 };
 
 }  // namespace sim_ws_server

@@ -335,11 +335,14 @@ bool SimWsServerComponent::try_parse_one_frame_() {
     case 0x02: {  // text / binary
       ESP_LOGD(TAG, "RX text(%u): %.*s", (unsigned) payload_len, (int) payload_len, payload.data());
       if (on_message_) on_message_(payload);
-      // 應用層 PING → 回 PONG
+      // 應用層 PING → 回 PONG（不解析 EVENT）
       if (payload.find("\"type\":\"PING\"") != std::string::npos ||
           payload.find("\"type\": \"PING\"") != std::string::npos) {
         const char *pong = "{\"type\":\"PONG\"}";
         send_ws_frame_(0x01, (const uint8_t *) pong, strlen(pong));
+      } else {
+        // Phase 2：抽出主要欄位丟給 on_parsed_event_
+        parse_and_dispatch_event_(payload);
       }
       break;
     }
@@ -420,6 +423,54 @@ bool SimWsServerComponent::send_text(const std::string &text) {
 void SimWsServerComponent::send_app_ping_() {
   const char *ping = "{\"type\":\"PING\"}";
   send_ws_frame_(0x01, (const uint8_t *) ping, strlen(ping));
+}
+
+// 輕量 JSON 欄位抽取（不拉 cJSON 依賴）。
+// 找 "key":"value" 或 "key":<num>，回傳 value/-1。
+// 假設 key 不會出現在字串值內（主板 STATUS/EVENT 結構固定，這個假設成立）。
+static std::string extract_str_field(const std::string &json, const char *key) {
+  std::string needle = std::string("\"") + key + "\":\"";
+  size_t pos = json.find(needle);
+  if (pos == std::string::npos) {
+    needle = std::string("\"") + key + "\": \"";
+    pos = json.find(needle);
+    if (pos == std::string::npos) return std::string();
+  }
+  pos += needle.size();
+  size_t end = json.find('"', pos);
+  if (end == std::string::npos) return std::string();
+  return json.substr(pos, end - pos);
+}
+
+static int extract_int_field(const std::string &json, const char *key) {
+  std::string needle = std::string("\"") + key + "\":";
+  size_t pos = json.find(needle);
+  if (pos == std::string::npos) return -1;
+  pos += needle.size();
+  while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+  if (pos >= json.size()) return -1;
+  if (json[pos] == '"') return -1;  // 不是 number
+  size_t end = pos;
+  while (end < json.size() && (isdigit(json[end]) || json[end] == '-')) end++;
+  if (end == pos) return -1;
+  std::string num = json.substr(pos, end - pos);
+  return atoi(num.c_str());
+}
+
+void SimWsServerComponent::parse_and_dispatch_event_(const std::string &payload) {
+  if (!on_parsed_event_) return;
+  ParsedEvent ev;
+  ev.raw = payload;
+  ev.type = extract_str_field(payload, "type");
+  if (ev.type.empty()) return;
+  if (ev.type == "EVENT") {
+    ev.event_name = extract_str_field(payload, "event");
+  }
+  // wash_phase 在 EVENT.wash_stage 和 STATUS.data 都會出現
+  ev.wash_phase = extract_str_field(payload, "wash_phase");
+  ev.wash_stage = extract_int_field(payload, "wash_stage");
+  ev.wash_total = extract_int_field(payload, "wash_total");
+  on_parsed_event_(ev);
 }
 
 void SimWsServerComponent::close_client_(const char *reason) {
