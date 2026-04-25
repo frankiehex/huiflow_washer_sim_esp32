@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.8.3"
+  SIM_FIRMWARE_VER: "0.9.0"
 
 esphome:
   name: iot-washer-sim
@@ -165,7 +165,48 @@ esphome:
           ESP_LOGI("INIT", "HuiFlow Washer Sim v${SIM_FIRMWARE_VER} booted");
 
 # Phase 8：Self-Test 自動串接 A5→A6→A8→A9（2 分鐘跑完，不需硬體）
+# Phase 9：ws_health_check（10 連發 CMD status，計算 reply 比率）
 script:
+  - id: run_ws_health
+    mode: single
+    then:
+      - lambda: |-
+          id(ws_health_status).publish_state("Phase 9: starting WS health (10 x CMD status)...");
+          // 紀錄起始 RX frames 數，10 秒後比較
+          id(_ws_health_rx_start) = id(sws).frames_rx();
+          id(_ws_health_tx_start) = id(sws).frames_tx();
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 200ms
+      - lambda: 'id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"status\"}");'
+      - delay: 5s   # 等所有 reply 抵達
+      - lambda: |-
+          uint32_t tx_delta = id(sws).frames_tx() - id(_ws_health_tx_start);
+          uint32_t rx_delta = id(sws).frames_rx() - id(_ws_health_rx_start);
+          char buf[160];
+          // 預期：10 CMD + 1~2 PING TX、10 CMD_RESULT + STATUS + PONG RX
+          // 簡化判斷：rx_delta >= 10（至少 10 個 reply）
+          snprintf(buf, sizeof(buf),
+                   "DONE: TX +%u (expect ~10) | RX +%u (expect >=10) | %s",
+                   (unsigned) tx_delta, (unsigned) rx_delta,
+                   rx_delta >= 10 ? "HEALTHY" : "DEGRADED");
+          id(ws_health_status).publish_state(std::string(buf));
+
   - id: run_self_test
     mode: single
     then:
@@ -220,6 +261,7 @@ script:
           ESP_LOGI("self_test", "%s", buf);
 
 # Phase 7+ globals：A9 兩階段測試（等 disconnect 後再 expect reconnect）
+# Phase 9+ globals：ws_health_check 起始 RX/TX 計數
 globals:
   - id: a9_pending_disconnect
     type: bool
@@ -227,6 +269,12 @@ globals:
   - id: a8_pending_disconnect
     type: bool
     initial_value: 'false'
+  - id: _ws_health_rx_start
+    type: uint32_t
+    initial_value: '0'
+  - id: _ws_health_tx_start
+    type: uint32_t
+    initial_value: '0'
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -427,6 +475,12 @@ text_sensor:
   - platform: template
     name: "Self Test Status"
     id: self_test_status
+    update_interval: never
+
+  # Phase 9：WS health check 結果
+  - platform: template
+    name: "WS Health Status"
+    id: ws_health_status
     update_interval: never
 
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
@@ -733,6 +787,13 @@ button:
   - platform: restart
     name: "Sim Restart"
     id: btn_sim_restart
+
+  # === Phase 9：WS Health Check（10 連發 status，看 reply 比率） ===
+  - platform: template
+    name: "Run WS Health Check"
+    id: btn_ws_health
+    on_press:
+      - script.execute: run_ws_health
 
   # === Phase 6：A9 reboot 測試 ===
   # 送 reboot → 主板重啟 + reconnect within 30s
