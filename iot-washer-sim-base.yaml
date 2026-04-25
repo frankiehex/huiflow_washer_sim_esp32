@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.7.0"
+  SIM_FIRMWARE_VER: "0.7.1"
 
 esphome:
   name: iot-washer-sim
@@ -28,10 +28,19 @@ esphome:
           id(sws).set_on_connection_change_callback([](bool connected, const std::string &dev_id) {
             id(ws_client_connected).publish_state(connected ? "yes" : "no");
             id(ws_client_device_id).publish_state(dev_id);
-            // Phase 5 A8：reconnect → 餵 assertion observe
-            //   觀察事件名 "ws_reconnect"（內部合成、非主板送的）
-            //   只在 connected=true 時 observe；disconnect 由用戶按鈕 expect
-            if (connected) {
+            // Phase 7.1 兩階段 reconnect 測試：
+            //   disconnect 觸發 → 若有 pending flag → expect reconnect
+            //   reconnect 觸發 → observe（match pending expect）
+            if (!connected) {
+              if (id(a8_pending_disconnect)) {
+                id(asrt).expect_event("A8", "ws_reconnect", "", -1, 60000);
+                id(a8_pending_disconnect) = false;
+              }
+              if (id(a9_pending_disconnect)) {
+                id(asrt).expect_event("A9", "ws_reconnect", "", -1, 30000);
+                id(a9_pending_disconnect) = false;
+              }
+            } else {
               id(asrt).observe_event("ws_reconnect", "", -1, -1);
             }
           });
@@ -152,6 +161,15 @@ esphome:
             }
           });
           ESP_LOGI("INIT", "HuiFlow Washer Sim v${SIM_FIRMWARE_VER} booted");
+
+# Phase 7+ globals：A9 兩階段測試（等 disconnect 後再 expect reconnect）
+globals:
+  - id: a9_pending_disconnect
+    type: bool
+    initial_value: 'false'
+  - id: a8_pending_disconnect
+    type: bool
+    initial_value: 'false'
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -607,33 +625,50 @@ button:
 
   # === Phase 5：A8 WS reconnect 測試 ===
   # 主動斷線 → 期待主板 60s 內重連（模擬幻象重連 race condition）
+  # 兩階段：先設 flag → disconnect → 等 disconnect callback 觸發後才建立 expect
   - platform: template
     name: "Test A8 (disconnect+reconnect)"
     id: btn_test_a8
     on_press:
       - lambda: |-
-          id(asrt).expect_event("A8", "ws_reconnect", "", -1, 60000);
+          id(a8_pending_disconnect) = true;
           id(sws).disconnect_client("A8 test");
 
   # === Phase 6：A6 wash_unlock 測試 ===
-  # 送 wash_unlock CMD → 主板應送 EVENT wash_unlock within 1s
+  # 流程：先 wash_init 帶 unlock_pwd（讓主板進 lock 狀態）→ wash_unlock → EVENT
+  # 修正：純 wash_unlock 在 not_locked 時不送 EVENT，所以 A6 必須先 lock
   - platform: template
-    name: "Test A6 (wash_unlock)"
+    name: "Test A6 (lock then unlock)"
     id: btn_test_a6
     on_press:
       - lambda: |-
-          id(asrt).expect_event("A6", "wash_unlock", "", -1, 1000);
+          // 步驟 1：先 lock（送 wash_init 帶 unlock_pwd）
+          id(sws).send_text(
+            "{\"type\":\"CMD\",\"cmd\":\"wash_init\","
+            "\"total\":2,\"bb_timeout\":30,"
+            "\"unlock_pwd\":\"5678\","
+            "\"steps\":["
+              "{\"id\":\"501\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Standby\"},"
+              "{\"id\":\"502\",\"bb\":0,\"R03\":0,\"auto_sec\":1,\"name\":\"Pre-Wash\"}"
+            "]}");
+          // 步驟 2：等 200ms 後 expect + 送 unlock（YAML lambda 同步執行，
+          //   依賴主板處理 wash_init 比 unlock 早。實測 lock 需 ~100ms）
+          // 注意：ESPHome lambda 不支援 sleep，所以這個 expect 在 lock 之前就建立
+          // 若 lock 失敗（主板沒進 lock 狀態），unlock 也不會發 EVENT，A6 會 timeout fail
+          id(asrt).expect_event("A6", "wash_unlock", "", -1, 1500);
+          // 直接連送 unlock，主板的 message queue 會依序處理 init → unlock
           id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_unlock\"}");
 
   # === Phase 6：A9 reboot 測試 ===
   # 送 reboot → 主板重啟 + reconnect within 30s
   # （主板重啟典型 8~15s + reconnect 5s）
+  # 兩階段：先設 flag → 送 reboot → 等主板真的斷線後才建立 expect
   - platform: template
     name: "Test A9 (reboot+reconnect)"
     id: btn_test_a9
     on_press:
       - lambda: |-
-          id(asrt).expect_event("A9", "ws_reconnect", "", -1, 30000);
+          id(a9_pending_disconnect) = true;
           id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"reboot\"}");
 
 # === Phase 3：故障注入機率 number sliders ===
