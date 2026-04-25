@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.9.4"
+  SIM_FIRMWARE_VER: "0.9.5"
 
 esphome:
   name: iot-washer-sim
@@ -213,6 +213,39 @@ script:
 
   # Phase 9.2：自動定期 health check（每 300s 跑一次，degraded 自動恢復）
   # （on_boot 60s 後啟動，避免撞 OTA check）
+  # Phase 9.5：Burn-in 壓力測試（SW5 100 輪 + 10% red_burst 機率）
+  # 跑完報 per-rule 統計 + 重置 fault rates 為 0
+  - id: run_burnin_100x
+    mode: single
+    then:
+      - lambda: |-
+          id(asrt).reset_stats();
+          id(fsm).set_fault_red_burst(10);
+          id(fsm).set_fault_power_loss(0);
+          id(fsm).set_fault_flicker(0);
+          id(burnin_status).publish_state("BURN-IN starting: SW5 x100 @ 0.2x speed, 10% red_burst");
+      - lambda: |-
+          // 1500ms inter-run，整批約 (12 step * 50ms + 1500) * 100 = ~210s
+          id(fsm).start_batch("SW5", 0.2f, 100, 1500);
+      # 等批次跑完（最長 5 分鐘 watchdog）
+      - delay: 240s
+      - lambda: |-
+          char buf[256];
+          uint32_t pass = id(asrt).total_pass();
+          uint32_t fail = id(asrt).total_fail();
+          uint32_t total = pass + fail;
+          uint32_t rate = total > 0 ? (pass * 100 / total) : 0;
+          snprintf(buf, sizeof(buf),
+                   "BURN-IN DONE: %u runs (%u faults), %u pass / %u fail (%u%%) | %s",
+                   (unsigned) id(fsm).batch_completed(),
+                   (unsigned) id(fsm).fault_count(),
+                   (unsigned) pass, (unsigned) fail, (unsigned) rate,
+                   id(asrt).per_rule_summary().c_str());
+          id(burnin_status).publish_state(std::string(buf));
+          // 重置 fault rates
+          id(fsm).set_fault_red_burst(0);
+          id(fsm).stop_batch();
+
   - id: run_self_test
     mode: single
     then:
@@ -490,6 +523,12 @@ text_sensor:
   - platform: template
     name: "WS Health Status"
     id: ws_health_status
+    update_interval: never
+
+  # Phase 9.5：Burn-in 壓力測試結果
+  - platform: template
+    name: "Burn-in Status"
+    id: burnin_status
     update_interval: never
 
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
@@ -803,6 +842,13 @@ button:
     id: btn_ws_health
     on_press:
       - script.execute: run_ws_health
+
+  # === Phase 9.5：Burn-in 100 輪壓力測試（~3.5 分鐘） ===
+  - platform: template
+    name: "Run Burn-in 100x SW5"
+    id: btn_burnin
+    on_press:
+      - script.execute: run_burnin_100x
 
   # === Phase 6：A9 reboot 測試 ===
   # 送 reboot → 主板重啟 + reconnect within 30s
