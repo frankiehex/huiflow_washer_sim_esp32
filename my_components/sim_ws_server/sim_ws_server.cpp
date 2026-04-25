@@ -170,8 +170,19 @@ void SimWsServerComponent::handle_client_rx_() {
   }
 
   // 解所有可用的完整 frame
+  uint32_t frames_parsed = 0;
   while (!rx_accum_.empty() && client_fd_ >= 0) {
     if (!try_parse_one_frame_()) break;  // payload 不完整 → 等下輪
+    frames_parsed++;
+  }
+
+  // Phase 8.2：stale 防護 — rx_accum_ 累積過多卻無法解出 frame，視為連線異常
+  //   常見成因：對端送的 frame 格式損壞、半開連線、buffered 殘留 byte。
+  //   16KB 是 STATUS (~4KB) + 多筆 EVENT 的最寬鬆值。若超過必有問題。
+  if (handshake_done_ && rx_accum_.size() > 16384) {
+    ESP_LOGW(TAG, "rx_accum stuck at %u bytes (frames_parsed=%u this round), forcing reconnect",
+             (unsigned) rx_accum_.size(), (unsigned) frames_parsed);
+    close_client_("rx_accum stuck >16KB");
   }
 }
 

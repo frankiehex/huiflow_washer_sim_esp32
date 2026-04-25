@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.8.1"
+  SIM_FIRMWARE_VER: "0.8.2"
 
 esphome:
   name: iot-washer-sim
@@ -728,6 +728,11 @@ button:
     id: btn_self_test
     on_press:
       - script.execute: run_self_test
+
+  # === Phase 8.2：sim 板自身軟重啟（debug 卡住時用） ===
+  - platform: restart
+    name: "Sim Restart"
+    id: btn_sim_restart
 
   # === Phase 6：A9 reboot 測試 ===
   # 送 reboot → 主板重啟 + reconnect within 30s
