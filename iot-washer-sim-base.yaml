@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.8.0"
+  SIM_FIRMWARE_VER: "0.8.1"
 
 esphome:
   name: iot-washer-sim
@@ -33,11 +33,13 @@ esphome:
             //   reconnect 觸發 → observe（match pending expect）
             if (!connected) {
               if (id(a8_pending_disconnect)) {
-                id(asrt).expect_event("A8", "ws_reconnect", "", -1, 60000);
+                // min_actual_ms=500：避免 stale fast-reconnect 導致 false-PASS
+                id(asrt).expect_event("A8", "ws_reconnect", "", -1, 500, 60000);
                 id(a8_pending_disconnect) = false;
               }
               if (id(a9_pending_disconnect)) {
-                id(asrt).expect_event("A9", "ws_reconnect", "", -1, 30000);
+                // min_actual_ms=3000：reboot 至少要 3 秒
+                id(asrt).expect_event("A9", "ws_reconnect", "", -1, 3000, 30000);
                 id(a9_pending_disconnect) = false;
               }
             } else {

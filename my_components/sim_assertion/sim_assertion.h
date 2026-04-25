@@ -41,6 +41,7 @@ struct PendingExpectation {
   std::string expected_event;   // 例 "wash_stage" 或 "wash_nopower"
   std::string expected_phase;   // 例 "green" / "blue" / "red" / "" (任意)
   int expected_total;           // -1=不限；0=destructive reset；>0=指定 total
+  uint32_t min_actual_ms;       // observe 早於此值忽略（防 stale connect false-PASS）
   uint32_t deadline_ms;
   uint32_t created_ms;
 };
@@ -58,6 +59,14 @@ class SimAssertionComponent : public Component {
                     const std::string &expected_event,
                     const std::string &expected_phase,
                     int expected_total,
+                    uint32_t window_ms);
+
+  // 過載：min_actual_ms 防 stale fast-PASS（A8/A9 重連測試用）
+  void expect_event(const std::string &assertion_id,
+                    const std::string &expected_event,
+                    const std::string &expected_phase,
+                    int expected_total,
+                    uint32_t min_actual_ms,
                     uint32_t window_ms);
 
   // sim_ws_server EVENT parser 觸發：主板回應到達

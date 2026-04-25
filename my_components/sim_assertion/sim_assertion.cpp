@@ -47,18 +47,28 @@ void SimAssertionComponent::expect_event(const std::string &assertion_id,
                                          const std::string &expected_phase,
                                          int expected_total,
                                          uint32_t window_ms) {
+  expect_event(assertion_id, expected_event, expected_phase, expected_total, 0, window_ms);
+}
+
+void SimAssertionComponent::expect_event(const std::string &assertion_id,
+                                         const std::string &expected_event,
+                                         const std::string &expected_phase,
+                                         int expected_total,
+                                         uint32_t min_actual_ms,
+                                         uint32_t window_ms) {
   PendingExpectation e;
   e.assertion_id = assertion_id;
   e.expected_event = expected_event;
   e.expected_phase = expected_phase;
   e.expected_total = expected_total;
+  e.min_actual_ms = min_actual_ms;
   e.created_ms = millis();
   e.deadline_ms = e.created_ms + window_ms;
   pending_.push_back(e);
-  ESP_LOGD(TAG, "expect[%s]: event=%s phase=%s total=%d within %ums",
+  ESP_LOGD(TAG, "expect[%s]: event=%s phase=%s total=%d min=%ums within %ums",
            assertion_id.c_str(), expected_event.c_str(),
            expected_phase.empty() ? "(any)" : expected_phase.c_str(),
-           expected_total, (unsigned) window_ms);
+           expected_total, (unsigned) min_actual_ms, (unsigned) window_ms);
 }
 
 void SimAssertionComponent::observe_event(const std::string &event_name,
@@ -75,7 +85,10 @@ void SimAssertionComponent::observe_event(const std::string &event_name,
     if (it->expected_total >= 0) {
       total_match = (it->expected_total == wash_total);
     }
-    if (event_match && phase_match && total_match) {
+    // 防 stale fast-PASS：actual 必須 >= min_actual_ms
+    uint32_t elapsed = now - it->created_ms;
+    bool min_ok = elapsed >= it->min_actual_ms;
+    if (event_match && phase_match && total_match && min_ok) {
       // PASS!
       AssertionResult r;
       r.assertion_id = it->assertion_id;
