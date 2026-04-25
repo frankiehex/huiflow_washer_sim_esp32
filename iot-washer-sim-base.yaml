@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.9.0"
+  SIM_FIRMWARE_VER: "0.9.1"
 
 esphome:
   name: iot-washer-sim
@@ -198,14 +198,18 @@ script:
       - lambda: |-
           uint32_t tx_delta = id(sws).frames_tx() - id(_ws_health_tx_start);
           uint32_t rx_delta = id(sws).frames_rx() - id(_ws_health_rx_start);
+          bool degraded = rx_delta < 5;  // 收到 < 5 reply 視為 degraded
           char buf[160];
-          // 預期：10 CMD + 1~2 PING TX、10 CMD_RESULT + STATUS + PONG RX
-          // 簡化判斷：rx_delta >= 10（至少 10 個 reply）
           snprintf(buf, sizeof(buf),
-                   "DONE: TX +%u (expect ~10) | RX +%u (expect >=10) | %s",
+                   "DONE: TX +%u | RX +%u | %s%s",
                    (unsigned) tx_delta, (unsigned) rx_delta,
-                   rx_delta >= 10 ? "HEALTHY" : "DEGRADED");
+                   degraded ? "DEGRADED — auto-recovery" : "HEALTHY",
+                   degraded ? " (forcing reconnect)" : "");
           id(ws_health_status).publish_state(std::string(buf));
+          // Phase 9.1：DEGRADED 自動觸發 disconnect → 主板會重連
+          if (degraded) {
+            id(sws).disconnect_client("ws health DEGRADED auto-recover");
+          }
 
   - id: run_self_test
     mode: single
