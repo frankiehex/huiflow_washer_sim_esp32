@@ -1,6 +1,42 @@
 # Changelog
 
-## v0.8.2 (current) — 2026-04-25
+## v0.9.5 (current) — 2026-04-25
+
+- **新增** `Run Burn-in 100x SW5` 按鈕：reset stats → 10% red_burst → batch x100 @0.2x → 240s 後報 final per-rule
+- text_sensor `Burn-in Status` 顯示批次摘要
+
+## v0.9.4 — 2026-04-25
+
+- Self-Test 加 pre-flight `wash_reset` 清主板 wash state
+- A5 expect 視窗 1500→2000ms（容忍 v4.0.74 較長處理時間）
+
+## v0.9.3 — 2026-04-25
+
+- **Dashboard** per-rule chip 視覺化：每條規則 PASS/FAIL 數 + 比例 bar + avg ms
+- 解析 `assertion_per_rule` text_sensor 渲染 `A1:5/0@320ms` 等 chip
+
+## v0.9.2 — 2026-04-25
+
+- **interval** 元件：每 5 分鐘自動跑 ws_health_check（startup_delay 60s）
+- 條件：`is_client_connected()` 才跑，避免無連線時白做
+- 配合 v0.9.1 自動 disconnect → sim 變成 set-it-and-forget-it
+
+## v0.9.1 — 2026-04-25
+
+- WS health check DEGRADED（reply < 5）自動觸發 `disconnect_client` → 主板會 backoff 後重連
+
+## v0.9.0 — 2026-04-25
+
+- **新增** WS Health Check 診斷工具：1ms 間隔連發 10 個 CMD status，5s 後比對 reply 數
+- 動機：v4.0.74 主板偶發「半開 TCP 連線」（sim 認為連著、主板認為斷）
+- text_sensor `WS Health Status` 顯示 HEALTHY / DEGRADED
+
+## v0.8.3 — 2026-04-25
+
+- `rx_accum_` no-progress 5s 檢查移到 `loop()`（不依賴 recv 觸發）
+- 涵蓋「半開連線：TCP 還在但 recv 拿不到資料」的 edge case
+
+## v0.8.2 — 2026-04-25
 
 - **sim_ws_server**：rx_accum_ 超 16KB 無法解 frame 自動 close + reconnect（防 stale 半開連線）
 - **新增** Sim Restart 按鈕（debug 用，主板互動卡住時重置）
