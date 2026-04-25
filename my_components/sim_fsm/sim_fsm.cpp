@@ -5,6 +5,7 @@
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "esp_random.h"
 #include <cstdio>
 
 namespace esphome {
@@ -132,9 +133,17 @@ void SimFsmComponent::loop() {
     last_rx_poll_ms_ = now;
     poll_uart_rx_();
   }
+  // Phase 3：fault injection（蓋過 scenario 的 LED 控制）
+  if (fault_active_) {
+    tick_fault_();
+  }
   // Scenario 引擎推進
-  if (scenario_ != nullptr) {
+  if (scenario_ != nullptr && !fault_active_) {
     tick_scenario_();
+  }
+  // Phase 3：batch runner
+  if (batch_remaining_ > 0 && scenario_ == nullptr && !fault_active_) {
+    tick_batch_();
   }
 }
 
@@ -317,6 +326,8 @@ void SimFsmComponent::advance_scenario_step_() {
 
   const ScenarioStep &s = sc->steps[scenario_step_idx_];
   set_led(s.target_led);
+  // Phase 3：每步轉換時 roll 故障
+  maybe_inject_fault_();
   scenario_step_enter_ms_ = millis();
   scenario_step_dwell_ms_ = (uint32_t)((float) s.dwell_ms * scenario_speed_factor_);
   scenario_waiting_gowasher_ = s.wait_gowasher;
@@ -334,13 +345,19 @@ void SimFsmComponent::finish_scenario_() {
   const Scenario *sc = reinterpret_cast<const Scenario *>(scenario_);
   if (sc == nullptr) return;
   uint32_t duration_ms = millis() - scenario_start_ms_;
-  char buf[80];
-  snprintf(buf, sizeof(buf), "%s run#%u finished in %ums",
-           sc->name, (unsigned) scenario_run_id_, (unsigned) duration_ms);
+  char buf[96];
+  snprintf(buf, sizeof(buf), "%s run#%u finished in %ums (batch %u/%u)",
+           sc->name, (unsigned) scenario_run_id_, (unsigned) duration_ms,
+           (unsigned) batch_completed_,
+           (unsigned) (batch_completed_ + batch_remaining_));
   ESP_LOGI(TAG, "scenario: %s", buf);
   emit_state_("scenario_finish", buf);
   scenario_ = nullptr;
   scenario_waiting_gowasher_ = false;
+  // Phase 3：若處於 batch，標記下一輪起跑時機
+  if (batch_remaining_ > 0) {
+    batch_inter_run_until_ms_ = millis() + batch_inter_run_ms_;
+  }
 }
 
 const char *SimFsmComponent::scenario_name() const {
@@ -355,6 +372,119 @@ int SimFsmComponent::scenario_total() const {
 
 void SimFsmComponent::emit_state_(const char *ev, const std::string &detail) {
   if (state_cb_) state_cb_(ev, detail);
+}
+
+// ─── Phase 3：Batch runner ──────────────────────────────────────────
+void SimFsmComponent::start_batch(const char *scenario_name, float speed_factor,
+                                  uint32_t count, uint32_t inter_run_ms) {
+  if (count == 0) return;
+  batch_scenario_name_ = scenario_name ? scenario_name : "SW5";
+  batch_speed_factor_ = speed_factor;
+  batch_remaining_ = count;
+  batch_completed_ = 0;
+  batch_inter_run_ms_ = inter_run_ms < 100 ? 100 : inter_run_ms;
+  batch_inter_run_until_ms_ = 0;  // 立即起跑第一輪
+
+  char buf[96];
+  snprintf(buf, sizeof(buf), "batch: %s × %u, speed=%.2fx, inter=%ums",
+           batch_scenario_name_.c_str(), (unsigned) count, speed_factor,
+           (unsigned) batch_inter_run_ms_);
+  ESP_LOGI(TAG, "%s", buf);
+  emit_state_("batch_start", buf);
+}
+
+void SimFsmComponent::stop_batch() {
+  if (batch_remaining_ == 0) return;
+  ESP_LOGI(TAG, "batch stopped at %u/%u completed",
+           (unsigned) batch_completed_,
+           (unsigned) (batch_completed_ + batch_remaining_));
+  batch_remaining_ = 0;
+  if (scenario_ != nullptr) stop_scenario();
+  emit_state_("batch_stop", "manual stop");
+}
+
+void SimFsmComponent::tick_batch_() {
+  // scenario 已結束（scenario_ == nullptr）且不在故障中 → 啟下一輪
+  const uint32_t now = millis();
+  if (now < batch_inter_run_until_ms_) return;  // 還在 inter-run delay 中
+  if (batch_remaining_ == 0) return;            // 防呆
+
+  // 上一輪結束剛標記 batch_inter_run_until_ms_ 後，此輪起跑
+  batch_completed_++;
+  batch_remaining_--;
+  start_scenario(batch_scenario_name_.c_str(), batch_speed_factor_);
+}
+
+// ─── Phase 3：故障注入 ─────────────────────────────────────────────
+void SimFsmComponent::maybe_inject_fault_() {
+  // 在 scenario 進 BLUE 相位前 / 進 GREEN 後做 roll
+  if (fault_active_) return;
+  // esp_random() 是 0 ~ UINT32_MAX；mod 100 給百分比
+  uint32_t r = esp_random() % 100;
+  if (fault_red_burst_prob_ > 0 && r < fault_red_burst_prob_) {
+    fault_type_ = FT_RED_BURST;
+    fault_active_ = true;
+    fault_pre_color_ = current_color_;
+    set_led(SC_RED);
+    fault_until_ms_ = millis() + (1000 + (esp_random() % 1500));  // 1~2.5s RED
+    stats_fault_count_++;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "RED_BURST until +%ums",
+             (unsigned) (fault_until_ms_ - millis()));
+    emit_state_("fault_inject", buf);
+    return;
+  }
+  r = esp_random() % 100;
+  if (fault_power_loss_prob_ > 0 && r < fault_power_loss_prob_) {
+    fault_type_ = FT_POWER_LOSS;
+    fault_active_ = true;
+    fault_pre_color_ = current_color_;
+    set_led(SC_OFF);
+    fault_until_ms_ = millis() + (500 + (esp_random() % 1500));  // 0.5~2s OFF
+    stats_fault_count_++;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "POWER_LOSS until +%ums",
+             (unsigned) (fault_until_ms_ - millis()));
+    emit_state_("fault_inject", buf);
+    return;
+  }
+  r = esp_random() % 100;
+  if (fault_flicker_prob_ > 0 && r < fault_flicker_prob_) {
+    fault_type_ = FT_FLICKER;
+    fault_active_ = true;
+    fault_pre_color_ = current_color_;
+    fault_flicker_state_ = false;
+    fault_next_toggle_ms_ = millis();
+    fault_until_ms_ = millis() + 2500;  // 2.5s flicker
+    stats_fault_count_++;
+    emit_state_("fault_inject", "FLICKER 2500ms");
+    return;
+  }
+}
+
+void SimFsmComponent::tick_fault_() {
+  const uint32_t now = millis();
+  if (now >= fault_until_ms_) {
+    end_fault_();
+    return;
+  }
+  if (fault_type_ == FT_FLICKER && now >= fault_next_toggle_ms_) {
+    fault_flicker_state_ = !fault_flicker_state_;
+    set_led(fault_flicker_state_ ? fault_pre_color_ : SC_OFF);
+    fault_next_toggle_ms_ = now + (50 + (esp_random() % 200));  // 50~250ms
+  }
+}
+
+void SimFsmComponent::end_fault_() {
+  fault_active_ = false;
+  fault_type_ = FT_NONE;
+  // 還原 scenario 預期的 LED 色（讓 scenario tick 接手繼續）
+  if (scenario_ != nullptr) {
+    set_led(fault_pre_color_);
+  } else {
+    set_led(SC_OFF);
+  }
+  emit_state_("fault_end", std::string(led_name()));
 }
 
 }  // namespace sim_fsm

@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.2.0"
+  SIM_FIRMWARE_VER: "0.3.0"
 
 esphome:
   name: iot-washer-sim
@@ -30,6 +30,7 @@ esphome:
             id(ws_client_device_id).publish_state(dev_id);
           });
           // Phase 2：主板每筆 EVENT/STATUS 解析後 → 推到對應 text_sensor
+          // Phase 3：解析後同步餵 sim_assertion（observe_event）
           id(sws).set_on_parsed_event_callback([](const esphome::sim_ws_server::ParsedEvent &ev) {
             if (ev.type == "EVENT") {
               id(last_event_name).publish_state(ev.event_name);
@@ -43,6 +44,10 @@ esphome:
               id(main_wash_step).publish_state(std::string(buf));
             } else if (ev.wash_total == 0) {
               id(main_wash_step).publish_state(std::string("reset"));
+            }
+            // Phase 3：餵 assertion 引擎（只關心 EVENT 類型）
+            if (ev.type == "EVENT") {
+              id(asrt).observe_event(ev.event_name, ev.wash_phase, ev.wash_stage, ev.wash_total);
             }
           });
           // 注冊 sim_fsm UART2 RX byte callback：累積 hex dump（最近 20 byte）
@@ -58,10 +63,28 @@ esphome:
             id(last_washer_cmd).publish_state(std::string(esphome::sim_fsm::washer_cmd_name(cmd)));
           });
           // Phase 2：scenario 狀態變化推 fsm_last_event（Dashboard 顯示進度）
+          // Phase 3：每次 led_change 同時對 sim_assertion 宣告期待
           id(fsm).set_on_fsm_state_callback([](const char *ev, const std::string &detail) {
             std::string s = std::string(ev) + ": " + detail;
             if (s.size() > 200) s = s.substr(0, 200) + "...";
             id(fsm_last_event).publish_state(s);
+
+            // Phase 3 assertions：依 LED 顏色宣告期待
+            if (strcmp(ev, "led_change") == 0) {
+              if (detail == "green") {
+                // A1: LED→GREEN → wash_stage with phase="green" within 500ms
+                id(asrt).expect_event("A1", "wash_stage", "green", -1, 500);
+              } else if (detail == "blue") {
+                // A2: LED→BLUE → wash_stage with phase="blue" within 500ms
+                id(asrt).expect_event("A2", "wash_stage", "blue", -1, 500);
+              } else if (detail == "red") {
+                // A3: LED→RED → wash_stage with wash_total=0 within 1000ms
+                id(asrt).expect_event("A3", "wash_stage", "", 0, 1000);
+              } else if (detail == "off") {
+                // A4: LED→OFF → wash_nopower EVENT within 1500ms
+                id(asrt).expect_event("A4", "wash_nopower", "", -1, 1500);
+              }
+            }
           });
           ESP_LOGI("INIT", "HuiFlow Washer Sim v${SIM_FIRMWARE_VER} booted");
 
@@ -77,11 +100,11 @@ logger:
   level: INFO
   hardware_uart: USB_SERIAL_JTAG
 
-# 外部自訂元件（Phase 1：sim_fsm + sim_ws_server + ota_update；Phase 3 會加 sim_assertion）
+# 外部自訂元件
 # ota_update 直接從主板 repo 複製（mbedtls 自包，無其他依賴）
 external_components:
   - source: my_components
-    components: [sim_fsm, sim_ws_server, ota_update]
+    components: [sim_fsm, sim_ws_server, ota_update, sim_assertion]
 
 wifi:
   ssid: !secret wifi_ssid
@@ -142,6 +165,10 @@ ota_update:
   manifest_url: "https://raw.githubusercontent.com/frankiehex/H_OTA_SIM/main/manifest.json"
   current_version: "${SIM_FIRMWARE_VER}"
   check_on_boot: true
+
+# Phase 3：assertion 引擎（A1~A4 規則 + pass/fail 統計）
+sim_assertion:
+  id: asrt
 
 # === Text sensors：Dashboard 顯示狀態 ===
 text_sensor:
@@ -224,6 +251,19 @@ text_sensor:
     id: main_wash_step
     update_interval: never
 
+  # Phase 3：assertion 結果摘要（最近 1 筆 pass / fail）
+  - platform: template
+    name: "Assertion Last Pass"
+    id: assertion_last_pass
+    lambda: 'return id(asrt).last_pass_summary();'
+    update_interval: 2s
+
+  - platform: template
+    name: "Assertion Last Fail"
+    id: assertion_last_fail
+    lambda: 'return id(asrt).last_fail_summary();'
+    update_interval: 2s
+
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
   - platform: template
     name: "OTA Status"
@@ -288,6 +328,43 @@ sensor:
   - platform: template
     name: "UART CMDs Received"
     lambda: 'return (float) id(fsm).total_cmds_received();'
+    update_interval: 2s
+    accuracy_decimals: 0
+
+  # Phase 3：assertion + batch + fault stats
+  - platform: template
+    name: "Assertion Pass"
+    lambda: 'return (float) id(asrt).total_pass();'
+    update_interval: 1s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Assertion Fail"
+    lambda: 'return (float) id(asrt).total_fail();'
+    update_interval: 1s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Assertion Pending"
+    lambda: 'return (float) id(asrt).pending_count();'
+    update_interval: 1s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Batch Remaining"
+    lambda: 'return (float) id(fsm).batch_remaining();'
+    update_interval: 1s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Batch Completed"
+    lambda: 'return (float) id(fsm).batch_completed();'
+    update_interval: 1s
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Faults Injected"
+    lambda: 'return (float) id(fsm).fault_count();'
     update_interval: 2s
     accuracy_decimals: 0
 
@@ -387,3 +464,67 @@ button:
       - lambda: |-
           id(fsm).stop_scenario();
           id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_reset\"}");
+
+  # === Phase 3：批次跑 + assertion 控制 ===
+  - platform: template
+    name: "Batch Run SW5 x10 @0.2x"
+    id: btn_batch_sw5_10
+    on_press:
+      - lambda: |-
+          id(asrt).reset_stats();
+          id(fsm).start_batch("SW5", 0.2f, 10, 1500);
+
+  - platform: template
+    name: "Batch Run SW5 x100 @0.2x"
+    id: btn_batch_sw5_100
+    on_press:
+      - lambda: |-
+          id(asrt).reset_stats();
+          id(fsm).start_batch("SW5", 0.2f, 100, 1500);
+
+  - platform: template
+    name: "Stop Batch"
+    id: btn_stop_batch
+    on_press:
+      - lambda: 'id(fsm).stop_batch();'
+
+  - platform: template
+    name: "Reset Assertion Stats"
+    id: btn_reset_assertion
+    on_press:
+      - lambda: 'id(asrt).reset_stats();'
+
+# === Phase 3：故障注入機率 number sliders ===
+number:
+  - platform: template
+    name: "Fault Flicker Prob (%)"
+    id: fault_flicker_pct
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 0
+    set_action:
+      - lambda: 'id(fsm).set_fault_flicker((uint8_t) x);'
+
+  - platform: template
+    name: "Fault Power Loss Prob (%)"
+    id: fault_power_loss_pct
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 0
+    set_action:
+      - lambda: 'id(fsm).set_fault_power_loss((uint8_t) x);'
+
+  - platform: template
+    name: "Fault Red Burst Prob (%)"
+    id: fault_red_burst_pct
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 0
+    set_action:
+      - lambda: 'id(fsm).set_fault_red_burst((uint8_t) x);'

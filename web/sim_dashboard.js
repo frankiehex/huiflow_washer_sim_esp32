@@ -31,12 +31,26 @@
       <span>LED: <span id="sim-led" style="font-weight:bold">--</span></span>
       <span>WS Client: <span id="sim-ws" style="font-weight:bold">--</span></span>
       <span>Scenario: <span id="sim-scn" style="font-weight:bold">idle</span> <span id="sim-scn-step">-</span></span>
+      <span>Batch: <span id="sim-batch" style="color:#9cf">-</span></span>
       <span>Main Phase: <span id="sim-mphase" style="font-weight:bold;color:#fa3">--</span> <span id="sim-mstep">-</span></span>
       <span>Last EVENT: <span id="sim-mev" style="color:#8f8">--</span></span>
       <span>Last UART CMD: <span id="sim-ucmd" style="color:#fc6">--</span></span>
+      <span style="border-left:1px solid #555;padding-left:16px">
+        Assertion <span style="color:#3c6">PASS:<span id="sim-pass">0</span></span>
+        / <span style="color:#f66">FAIL:<span id="sim-fail">0</span></span>
+        / pend:<span id="sim-pending">0</span>
+        / fault:<span id="sim-faults">0</span>
+      </span>
       <span>RX: <span id="sim-rx">0</span></span>
       <span>TX: <span id="sim-tx">0</span></span>
     `;
+    // 第二排：最近 fail
+    const fb = document.createElement('div');
+    fb.id = 'sim-failbar';
+    fb.style.cssText = 'position:sticky;top:48px;z-index:99;background:#220;color:#f88;padding:6px 16px;font-family:monospace;font-size:12px;border-bottom:1px solid #444;display:none';
+    fb.innerHTML = `<span style="color:#fa3">last fail:</span> <span id="sim-lastfail">--</span>`;
+    if (body.firstChild && body.firstChild.nextSibling) body.insertBefore(fb, body.firstChild.nextSibling);
+    else body.appendChild(fb);
     const body = document.body;
     if (body.firstChild) body.insertBefore(bar, body.firstChild);
     else body.appendChild(bar);
@@ -115,6 +129,52 @@
       case 'text_sensor-last_washer_cmd': {
         const el = document.getElementById('sim-ucmd');
         if (el) el.textContent = value || '--';
+        break;
+      }
+      case 'sensor-assertion_pass': {
+        const el = document.getElementById('sim-pass');
+        if (el) el.textContent = String(Math.round(Number(value) || 0));
+        break;
+      }
+      case 'sensor-assertion_fail': {
+        const el = document.getElementById('sim-fail');
+        if (el) el.textContent = String(Math.round(Number(value) || 0));
+        break;
+      }
+      case 'sensor-assertion_pending': {
+        const el = document.getElementById('sim-pending');
+        if (el) el.textContent = String(Math.round(Number(value) || 0));
+        break;
+      }
+      case 'sensor-faults_injected': {
+        const el = document.getElementById('sim-faults');
+        if (el) el.textContent = String(Math.round(Number(value) || 0));
+        break;
+      }
+      case 'sensor-batch_remaining': {
+        const r = Math.round(Number(value) || 0);
+        const elBatch = document.getElementById('sim-batch');
+        if (elBatch) {
+          if (r > 0) elBatch.textContent = `running (${r} left)`;
+          else if (window._sim_batch_completed > 0) elBatch.textContent = `done (${window._sim_batch_completed})`;
+          else elBatch.textContent = '-';
+        }
+        window._sim_batch_remaining = r;
+        break;
+      }
+      case 'sensor-batch_completed': {
+        const c = Math.round(Number(value) || 0);
+        window._sim_batch_completed = c;
+        const elBatch = document.getElementById('sim-batch');
+        const r = window._sim_batch_remaining || 0;
+        if (elBatch && r === 0 && c > 0) elBatch.textContent = `done (${c})`;
+        break;
+      }
+      case 'text_sensor-assertion_last_fail': {
+        const el = document.getElementById('sim-lastfail');
+        const fb = document.getElementById('sim-failbar');
+        if (el) el.textContent = value || '--';
+        if (fb) fb.style.display = (value && value.trim() !== '') ? '' : 'none';
         break;
       }
     }
