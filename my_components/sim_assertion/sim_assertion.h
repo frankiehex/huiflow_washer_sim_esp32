@@ -20,6 +20,7 @@
 #include "esphome/core/component.h"
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,15 @@ class SimAssertionComponent : public Component {
   // 取最近 N 筆結果（Dashboard 拉表用）
   const std::vector<AssertionResult> &results() const { return results_; }
 
+  // Phase 6：per-rule 統計
+  struct RuleStats {
+    uint32_t pass = 0;
+    uint32_t fail = 0;
+    uint32_t total_actual_ms = 0;  // 用於計算 pass 平均耗時
+  };
+  // 回傳 "A1:5/0|A2:3/2|A3:0/1|..." 格式（Dashboard 顯示用）
+  std::string per_rule_summary() const;
+
   // Phase 4：每筆 result 推送（給 YAML lambda 餵 SSE text_sensor）
   using OnResultCb = std::function<void(const AssertionResult &)>;
   void set_on_result_callback(OnResultCb cb) { on_result_ = std::move(cb); }
@@ -94,6 +104,9 @@ class SimAssertionComponent : public Component {
   uint32_t total_fail_ = 0;
   std::string last_fail_summary_;
   std::string last_pass_summary_;
+
+  // Phase 6：per-rule stats
+  std::map<std::string, RuleStats> rule_stats_;
 
   void record_result_(const AssertionResult &r);
   OnResultCb on_result_ = nullptr;

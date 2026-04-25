@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.5.0"
+  SIM_FIRMWARE_VER: "0.6.0"
 
 esphome:
   name: iot-washer-sim
@@ -318,6 +318,13 @@ text_sensor:
     id: assertion_result_csv
     update_interval: never
 
+  # Phase 6：per-rule 統計摘要（"A1:5/0@320ms|A2:3/2@420ms|..."）
+  - platform: template
+    name: "Assertion Per Rule"
+    id: assertion_per_rule
+    lambda: 'return id(asrt).per_rule_summary();'
+    update_interval: 2s
+
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
   - platform: template
     name: "OTA Status"
@@ -584,6 +591,27 @@ button:
       - lambda: |-
           id(asrt).expect_event("A8", "ws_reconnect", "", -1, 60000);
           id(sws).disconnect_client("A8 test");
+
+  # === Phase 6：A6 wash_unlock 測試 ===
+  # 送 wash_unlock CMD → 主板應送 EVENT wash_unlock within 1s
+  - platform: template
+    name: "Test A6 (wash_unlock)"
+    id: btn_test_a6
+    on_press:
+      - lambda: |-
+          id(asrt).expect_event("A6", "wash_unlock", "", -1, 1000);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_unlock\"}");
+
+  # === Phase 6：A9 reboot 測試 ===
+  # 送 reboot → 主板重啟 + reconnect within 30s
+  # （主板重啟典型 8~15s + reconnect 5s）
+  - platform: template
+    name: "Test A9 (reboot+reconnect)"
+    id: btn_test_a9
+    on_press:
+      - lambda: |-
+          id(asrt).expect_event("A9", "ws_reconnect", "", -1, 30000);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"reboot\"}");
 
 # === Phase 3：故障注入機率 number sliders ===
 number:

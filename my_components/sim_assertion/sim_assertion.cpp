@@ -99,10 +99,15 @@ void SimAssertionComponent::observe_event(const std::string &event_name,
 }
 
 void SimAssertionComponent::record_result_(const AssertionResult &r) {
+  // Phase 6：per-rule 統計累積
+  auto &rs = rule_stats_[r.assertion_id];
   if (r.pass) {
+    rs.pass++;
+    rs.total_actual_ms += (r.actual_ms == UINT32_MAX ? 0 : r.actual_ms);
     total_pass_++;
     last_pass_summary_ = r.assertion_id + ": " + r.detail;
   } else {
+    rs.fail++;
     total_fail_++;
     last_fail_summary_ = r.assertion_id + ": " + r.detail;
     ESP_LOGW(TAG, "FAIL %s: %s", r.assertion_id.c_str(), r.detail.c_str());
@@ -128,7 +133,21 @@ void SimAssertionComponent::reset_stats() {
   results_write_idx_ = 0;
   last_fail_summary_.clear();
   last_pass_summary_.clear();
+  rule_stats_.clear();
   ESP_LOGI(TAG, "stats reset");
+}
+
+std::string SimAssertionComponent::per_rule_summary() const {
+  std::string out;
+  for (const auto &kv : rule_stats_) {
+    if (!out.empty()) out += "|";
+    out += kv.first + ":" + std::to_string(kv.second.pass) + "/" + std::to_string(kv.second.fail);
+    if (kv.second.pass > 0) {
+      uint32_t avg = kv.second.total_actual_ms / kv.second.pass;
+      out += "@" + std::to_string(avg) + "ms";
+    }
+  }
+  return out.empty() ? std::string("(none)") : out;
 }
 
 }  // namespace sim_assertion
