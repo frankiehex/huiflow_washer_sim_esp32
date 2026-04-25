@@ -115,6 +115,9 @@ void SimAssertionComponent::record_result_(const AssertionResult &r) {
     results_[results_write_idx_] = r;
   }
   results_write_idx_ = (results_write_idx_ + 1) % MAX_RESULTS;
+
+  // Phase 4：通知訂閱者（YAML lambda 推到 text_sensor，SSE → JS rolling buffer）
+  if (on_result_) on_result_(r);
 }
 
 void SimAssertionComponent::reset_stats() {

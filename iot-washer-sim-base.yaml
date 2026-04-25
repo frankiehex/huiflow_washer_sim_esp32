@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.3.0"
+  SIM_FIRMWARE_VER: "0.4.0"
 
 esphome:
   name: iot-washer-sim
@@ -49,6 +49,22 @@ esphome:
             if (ev.type == "EVENT") {
               id(asrt).observe_event(ev.event_name, ev.wash_phase, ev.wash_stage, ev.wash_total);
             }
+          });
+          // Phase 4：每筆 assertion 結果 → 推 CSV 行到 text_sensor
+          //   格式：rule_id,P/F,actual_ms,window_ms,timestamp_ms,detail
+          //   JS 端 SSE 收到後 split + 加入 rolling table
+          id(asrt).set_on_result_callback([](const esphome::sim_assertion::AssertionResult &r) {
+            char buf[280];
+            snprintf(buf, sizeof(buf), "%s,%s,%u,%u,%u,%s",
+                     r.assertion_id.c_str(),
+                     r.pass ? "P" : "F",
+                     r.actual_ms == UINT32_MAX ? 0 : (unsigned) r.actual_ms,
+                     (unsigned) r.expected_within_ms,
+                     (unsigned) r.timestamp_ms,
+                     r.detail.c_str());
+            std::string s(buf);
+            if (s.size() > 240) s = s.substr(0, 240) + "...";
+            id(assertion_result_csv).publish_state(s);
           });
           // 注冊 sim_fsm UART2 RX byte callback：累積 hex dump（最近 20 byte）
           id(fsm).set_rx_byte_log_callback([](uint8_t b) {
@@ -166,7 +182,7 @@ ota_update:
   current_version: "${SIM_FIRMWARE_VER}"
   check_on_boot: true
 
-# Phase 3：assertion 引擎（A1~A4 規則 + pass/fail 統計）
+# Phase 3+4：assertion 引擎（A1~A5 規則 + pass/fail 統計 + result streaming）
 sim_assertion:
   id: asrt
 
@@ -263,6 +279,12 @@ text_sensor:
     id: assertion_last_fail
     lambda: 'return id(asrt).last_fail_summary();'
     update_interval: 2s
+
+  # Phase 4：每筆 result 即時 stream（SSE → JS rolling table）
+  - platform: template
+    name: "Assertion Result CSV"
+    id: assertion_result_csv
+    update_interval: never
 
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
   - platform: template
@@ -493,6 +515,33 @@ button:
     id: btn_reset_assertion
     on_press:
       - lambda: 'id(asrt).reset_stats();'
+
+  # === Phase 4：A5 wash_init.unlock_pwd 測試 ===
+  # 送 wash_init 帶 unlock_pwd → 主板應送 EVENT wash_stage with phase="lock" within 500ms
+  - platform: template
+    name: "Test A5 (wash_init lock)"
+    id: btn_test_a5
+    on_press:
+      - lambda: |-
+          // 先期待 lock phase EVENT
+          id(asrt).expect_event("A5", "wash_stage", "lock", -1, 1000);
+          // 送 wash_init 帶 unlock_pwd（總共 2 步，泡泡 timeout 30s）
+          id(sws).send_text(
+            "{\"type\":\"CMD\",\"cmd\":\"wash_init\","
+            "\"total\":2,\"bb_timeout\":30,"
+            "\"unlock_pwd\":\"5678\","
+            "\"steps\":["
+              "{\"id\":\"501\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Standby\"},"
+              "{\"id\":\"502\",\"bb\":0,\"R03\":0,\"auto_sec\":1,\"name\":\"Pre-Wash\"}"
+            "]}");
+
+  # 解鎖測試（送 wash_unlock CMD 應回 wash_unlock EVENT）
+  - platform: template
+    name: "Send wash_unlock"
+    id: btn_send_wash_unlock
+    on_press:
+      - lambda: |-
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_unlock\"}");
 
 # === Phase 3：故障注入機率 number sliders ===
 number:

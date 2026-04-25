@@ -19,6 +19,7 @@
 
 #include "esphome/core/component.h"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,10 @@ class SimAssertionComponent : public Component {
   // 取最近 N 筆結果（Dashboard 拉表用）
   const std::vector<AssertionResult> &results() const { return results_; }
 
+  // Phase 4：每筆 result 推送（給 YAML lambda 餵 SSE text_sensor）
+  using OnResultCb = std::function<void(const AssertionResult &)>;
+  void set_on_result_callback(OnResultCb cb) { on_result_ = std::move(cb); }
+
  protected:
   // 待匹配期待清單（FIFO）
   std::vector<PendingExpectation> pending_;
@@ -91,6 +96,7 @@ class SimAssertionComponent : public Component {
   std::string last_pass_summary_;
 
   void record_result_(const AssertionResult &r);
+  OnResultCb on_result_ = nullptr;
 };
 
 }  // namespace sim_assertion

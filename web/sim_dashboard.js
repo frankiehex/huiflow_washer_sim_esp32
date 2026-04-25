@@ -51,6 +51,58 @@
     fb.innerHTML = `<span style="color:#fa3">last fail:</span> <span id="sim-lastfail">--</span>`;
     if (body.firstChild && body.firstChild.nextSibling) body.insertBefore(fb, body.firstChild.nextSibling);
     else body.appendChild(fb);
+
+    // Phase 4：Assertion 結果 rolling table（top:80）
+    const rt = document.createElement('div');
+    rt.id = 'sim-results';
+    rt.style.cssText = [
+      'background:#1a1a1a','color:#ddd','padding:8px 16px',
+      'font-family:monospace','font-size:11px',
+      'border-bottom:2px solid #444','max-height:280px','overflow-y:auto',
+    ].join(';');
+    rt.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <strong>Assertion Results (rolling, last <span id="sim-rcount">0</span>/100)</strong>
+        <span>
+          <button id="sim-download-csv" style="background:#244;color:#9cf;border:1px solid #468;padding:2px 8px;cursor:pointer">📥 CSV</button>
+          <button id="sim-clear-table" style="background:#422;color:#fc6;border:1px solid #864;padding:2px 8px;margin-left:4px;cursor:pointer">🗑 Clear</button>
+        </span>
+      </div>
+      <table style="width:100%;border-collapse:collapse" id="sim-rtable">
+        <thead style="background:#222"><tr style="text-align:left">
+          <th style="padding:4px">#</th>
+          <th style="padding:4px">time</th>
+          <th style="padding:4px">rule</th>
+          <th style="padding:4px">P/F</th>
+          <th style="padding:4px">actual</th>
+          <th style="padding:4px">window</th>
+          <th style="padding:4px">detail</th>
+        </tr></thead>
+        <tbody id="sim-rtbody"></tbody>
+      </table>
+    `;
+    body.insertBefore(rt, body.children[2] || null);
+
+    // Rolling buffer
+    window._sim_results = [];
+    window._sim_results_max = 100;
+
+    document.getElementById('sim-download-csv').onclick = () => {
+      const lines = ['rule_id,pass_fail,actual_ms,window_ms,timestamp_ms,detail'];
+      for (const r of window._sim_results) lines.push(r._csv);
+      const blob = new Blob([lines.join('\n')], {type: 'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `sim-assertion-${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+    document.getElementById('sim-clear-table').onclick = () => {
+      window._sim_results = [];
+      document.getElementById('sim-rtbody').innerHTML = '';
+      document.getElementById('sim-rcount').textContent = '0';
+    };
     const body = document.body;
     if (body.firstChild) body.insertBefore(bar, body.firstChild);
     else body.appendChild(bar);
@@ -175,6 +227,49 @@
         const fb = document.getElementById('sim-failbar');
         if (el) el.textContent = value || '--';
         if (fb) fb.style.display = (value && value.trim() !== '') ? '' : 'none';
+        break;
+      }
+      case 'text_sensor-assertion_result_csv': {
+        // 格式：rule_id,P/F,actual_ms,window_ms,timestamp_ms,detail...
+        if (!value) break;
+        const parts = value.split(',');
+        if (parts.length < 5) break;
+        const rec = {
+          rule: parts[0],
+          pass: parts[1] === 'P',
+          actual_ms: parts[2],
+          window_ms: parts[3],
+          ts_ms: parts[4],
+          detail: parts.slice(5).join(','),
+          _csv: value,
+        };
+        // 跳過重複（template sensor 同值不重發，但保險）
+        const last = window._sim_results[window._sim_results.length - 1];
+        if (last && last._csv === value) break;
+        window._sim_results.push(rec);
+        if (window._sim_results.length > window._sim_results_max) window._sim_results.shift();
+        // 渲染新增 row
+        const tbody = document.getElementById('sim-rtbody');
+        if (!tbody) break;
+        const tr = document.createElement('tr');
+        const colorBg = rec.pass ? '#1a2a1a' : '#2a1a1a';
+        const colorPF = rec.pass ? '#3c6' : '#f66';
+        const tsAgo = ((Date.now() - performance.timeOrigin - parseInt(rec.ts_ms,10)) / 1000).toFixed(1);
+        tr.style.cssText = `background:${colorBg}`;
+        tr.innerHTML = `
+          <td style="padding:3px 4px;color:#888">${window._sim_results.length}</td>
+          <td style="padding:3px 4px">+${(parseInt(rec.ts_ms,10)/1000).toFixed(1)}s</td>
+          <td style="padding:3px 4px;font-weight:bold">${rec.rule}</td>
+          <td style="padding:3px 4px;color:${colorPF};font-weight:bold">${rec.pass?'PASS':'FAIL'}</td>
+          <td style="padding:3px 4px">${rec.actual_ms}ms</td>
+          <td style="padding:3px 4px">${rec.window_ms}ms</td>
+          <td style="padding:3px 4px;color:#bbb">${rec.detail}</td>
+        `;
+        tbody.insertBefore(tr, tbody.firstChild);
+        // 限制 DOM rows
+        while (tbody.children.length > window._sim_results_max) tbody.removeChild(tbody.lastChild);
+        const rcount = document.getElementById('sim-rcount');
+        if (rcount) rcount.textContent = String(window._sim_results.length);
         break;
       }
     }
