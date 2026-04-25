@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.7.1"
+  SIM_FIRMWARE_VER: "0.8.0"
 
 esphome:
   name: iot-washer-sim
@@ -161,6 +161,61 @@ esphome:
             }
           });
           ESP_LOGI("INIT", "HuiFlow Washer Sim v${SIM_FIRMWARE_VER} booted");
+
+# Phase 8：Self-Test 自動串接 A5→A6→A8→A9（2 分鐘跑完，不需硬體）
+script:
+  - id: run_self_test
+    mode: single
+    then:
+      - lambda: |-
+          id(asrt).reset_stats();
+          id(self_test_status).publish_state("RESET stats. Starting...");
+      - delay: 1s
+
+      # === A5：wash_init unlock_pwd → wash_phase=lock ===
+      - lambda: |-
+          id(self_test_status).publish_state("A5: sending wash_init+unlock_pwd...");
+          id(asrt).expect_event("A5", "wash_stage", "lock", -1, 1500);
+          id(sws).send_text(
+            "{\"type\":\"CMD\",\"cmd\":\"wash_init\","
+            "\"total\":2,\"bb_timeout\":30,"
+            "\"unlock_pwd\":\"5678\","
+            "\"steps\":["
+              "{\"id\":\"501\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Standby\"},"
+              "{\"id\":\"502\",\"bb\":0,\"R03\":0,\"auto_sec\":1,\"name\":\"Pre-Wash\"}"
+            "]}");
+      - delay: 3s
+
+      # === A6：wash_unlock → EVENT wash_unlock ===
+      - lambda: |-
+          id(self_test_status).publish_state("A6: sending wash_unlock...");
+          id(asrt).expect_event("A6", "wash_unlock", "", -1, 1500);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_unlock\"}");
+      - delay: 3s
+
+      # === A8：disconnect → reconnect within 60s ===
+      - lambda: |-
+          id(self_test_status).publish_state("A8: forcing disconnect...");
+          id(a8_pending_disconnect) = true;
+          id(sws).disconnect_client("self_test A8");
+      - delay: 65s
+
+      # === A9：reboot → reconnect within 30s ===
+      - lambda: |-
+          id(self_test_status).publish_state("A9: sending reboot...");
+          id(a9_pending_disconnect) = true;
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"reboot\"}");
+      - delay: 35s
+
+      # === 報告 ===
+      - lambda: |-
+          char buf[160];
+          snprintf(buf, sizeof(buf), "DONE: %u pass / %u fail | per-rule: %s",
+                   (unsigned) id(asrt).total_pass(),
+                   (unsigned) id(asrt).total_fail(),
+                   id(asrt).per_rule_summary().c_str());
+          id(self_test_status).publish_state(std::string(buf));
+          ESP_LOGI("self_test", "%s", buf);
 
 # Phase 7+ globals：A9 兩階段測試（等 disconnect 後再 expect reconnect）
 globals:
@@ -364,6 +419,12 @@ text_sensor:
   - platform: template
     name: "UART Burst Last"
     id: uart_burst_last
+    update_interval: never
+
+  # Phase 8：Self-Test 進度顯示
+  - platform: template
+    name: "Self Test Status"
+    id: self_test_status
     update_interval: never
 
   # OTA 狀態（由 ota_update.cpp publish_sensor("OTA Status", ...) 主動推）
@@ -658,6 +719,13 @@ button:
           id(asrt).expect_event("A6", "wash_unlock", "", -1, 1500);
           // 直接連送 unlock，主板的 message queue 會依序處理 init → unlock
           id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_unlock\"}");
+
+  # === Phase 8：Self-Test 一鍵跑 A5/A6/A8/A9 (~2 分鐘) ===
+  - platform: template
+    name: "Run Self-Test (A5+A6+A8+A9)"
+    id: btn_self_test
+    on_press:
+      - script.execute: run_self_test
 
   # === Phase 6：A9 reboot 測試 ===
   # 送 reboot → 主板重啟 + reconnect within 30s
