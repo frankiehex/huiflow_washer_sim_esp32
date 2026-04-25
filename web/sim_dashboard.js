@@ -149,10 +149,11 @@
       ['Reboot Main',  'send_cmd_reboot', 'danger'],
     ],
     scenario: [
-      ['SW5 @0.1x', 'run_sw5__0_1x', 'primary'],
-      ['SW5 @1.0x', 'run_sw5__1_0x'],
-      ['SW6 @0.1x', 'run_sw6__0_1x'],
-      ['Stop',      'stop_scenario', 'danger'],
+      ['🤖 Auto SW5 (WS-only)', 'auto_wash_sw5__ws-only_', 'primary'],
+      ['SW5 @0.1x (LED)', 'run_sw5__0_1x'],
+      ['SW5 @1.0x (LED)', 'run_sw5__1_0x'],
+      ['SW6 @0.1x (LED)', 'run_sw6__0_1x'],
+      ['Stop',          'stop_scenario', 'danger'],
     ],
     tests: [
       ['A5 lock',     'test_a5__wash_init_lock_'],
@@ -257,6 +258,7 @@
         <div class="log-line"><span class="label">Last UART CMD:</span><span class="value" id="sv-uart">--</span></div>
         <div class="log-line"><span class="label">Last RX:</span><span class="value" id="sv-lastrx">--</span></div>
         <div class="log-line"><span class="label">Self-Test:</span><span class="value" id="sv-self">--</span></div>
+        <div class="log-line"><span class="label">Auto Wash:</span><span class="value" id="sv-autowash">--</span></div>
         <div class="log-line"><span class="label">Burn-in:</span><span class="value" id="sv-burn">--</span></div>
         <div class="log-line"><span class="label">WS Health:</span><span class="value" id="sv-health">--</span></div>
         <div class="log-line"><span class="label">FSM Event:</span><span class="value" id="sv-fsm">--</span></div>
@@ -446,6 +448,9 @@
         break;
       case 'text_sensor-self_test_status':
         if ($('sv-self')) $('sv-self').textContent = value || '--';
+        break;
+      case 'text_sensor-auto_wash_status':
+        if ($('sv-autowash')) $('sv-autowash').textContent = value || '--';
         break;
       case 'text_sensor-burn_in_status':
       case 'text_sensor-burnin_status':

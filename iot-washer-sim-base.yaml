@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.10.4"
+  SIM_FIRMWARE_VER: "0.11.1"
 
 esphome:
   name: iot-washer-sim
@@ -245,6 +245,64 @@ script:
           // 重置 fault rates
           id(fsm).set_fault_red_burst(0);
           id(fsm).stop_batch();
+
+  # v0.11.0：純 WS 自動模擬完整 SW5 流程（不需 wires）
+  # 送 wash_init 6 步 → 每隔 2s 送 wash_goto 推進 → 主板送 wash_stage EVENT
+  - id: run_auto_wash_sw5
+    mode: single
+    then:
+      - lambda: |-
+          id(asrt).reset_stats();
+          id(auto_wash_status).publish_state("[1/8] Reset + wash_init...");
+          id(sws).send_text(
+            "{\"type\":\"CMD\",\"cmd\":\"wash_init\","
+            "\"total\":6,\"bb_timeout\":120,"
+            "\"steps\":["
+              "{\"id\":\"501\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Standby\"},"
+              "{\"id\":\"502\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Pre-Wash\"},"
+              "{\"id\":\"503\",\"bb\":1,\"R03\":0,\"auto_sec\":0,\"name\":\"Foam\"},"
+              "{\"id\":\"504\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"AIScanning\"},"
+              "{\"id\":\"505\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Final_Rinse\"},"
+              "{\"id\":\"506\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Complete\"}"
+            "]}");
+      - delay: 1500ms
+      - lambda: |-
+          id(auto_wash_status).publish_state("[2/8] wash_goto 502 (Pre-Wash)");
+          id(asrt).expect_event("B2", "wash_stage", "", -1, 2000);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_goto\",\"arg\":\"502\"}");
+      - delay: 2s
+      - lambda: |-
+          id(auto_wash_status).publish_state("[3/8] wash_goto 503 (Foam)");
+          id(asrt).expect_event("B3", "wash_stage", "", -1, 2000);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_goto\",\"arg\":\"503\"}");
+      - delay: 2s
+      - lambda: |-
+          id(auto_wash_status).publish_state("[4/8] wash_goto 504 (AIScanning)");
+          id(asrt).expect_event("B4", "wash_stage", "", -1, 2000);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_goto\",\"arg\":\"504\"}");
+      - delay: 2s
+      - lambda: |-
+          id(auto_wash_status).publish_state("[5/8] wash_goto 505 (Final_Rinse)");
+          id(asrt).expect_event("B5", "wash_stage", "", -1, 2000);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_goto\",\"arg\":\"505\"}");
+      - delay: 2s
+      - lambda: |-
+          id(auto_wash_status).publish_state("[6/8] wash_goto 506 (Complete)");
+          id(asrt).expect_event("B6", "wash_stage", "", -1, 2000);
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_goto\",\"arg\":\"506\"}");
+      - delay: 2s
+      - lambda: |-
+          id(auto_wash_status).publish_state("[7/8] wash_reset cleanup");
+          id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_reset\"}");
+      - delay: 1s
+      - lambda: |-
+          char buf[200];
+          snprintf(buf, sizeof(buf),
+                   "[8/8] DONE: %u pass / %u fail | %s",
+                   (unsigned) id(asrt).total_pass(),
+                   (unsigned) id(asrt).total_fail(),
+                   id(asrt).per_rule_summary().c_str());
+          id(auto_wash_status).publish_state(std::string(buf));
 
   - id: run_self_test
     mode: single
@@ -519,6 +577,12 @@ text_sensor:
     id: self_test_status
     update_interval: never
 
+  # v0.11.0：自動 wash 進度顯示
+  - platform: template
+    name: "Auto Wash Status"
+    id: auto_wash_status
+    update_interval: never
+
   # Phase 9：WS health check 結果
   - platform: template
     name: "WS Health Status"
@@ -731,6 +795,13 @@ button:
       - lambda: |-
           id(fsm).stop_scenario();
           id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_reset\"}");
+
+  # v0.11.0：純 WS 自動模擬完整 SW5（不需 wires）
+  - platform: template
+    name: "Auto Wash SW5 (WS-only)"
+    id: btn_auto_wash
+    on_press:
+      - script.execute: run_auto_wash_sw5
 
   # === Phase 3：批次跑 + assertion 控制 ===
   - platform: template
