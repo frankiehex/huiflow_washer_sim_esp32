@@ -10,7 +10,7 @@
 # WS server listens on 0.0.0.0:8090，無認證，主板連 /ws?device_id=xxx
 
 substitutions:
-  SIM_FIRMWARE_VER: "0.4.0"
+  SIM_FIRMWARE_VER: "0.5.0"
 
 esphome:
   name: iot-washer-sim
@@ -28,6 +28,12 @@ esphome:
           id(sws).set_on_connection_change_callback([](bool connected, const std::string &dev_id) {
             id(ws_client_connected).publish_state(connected ? "yes" : "no");
             id(ws_client_device_id).publish_state(dev_id);
+            // Phase 5 A8：reconnect → 餵 assertion observe
+            //   觀察事件名 "ws_reconnect"（內部合成、非主板送的）
+            //   只在 connected=true 時 observe；disconnect 由用戶按鈕 expect
+            if (connected) {
+              id(asrt).observe_event("ws_reconnect", "", -1, -1);
+            }
           });
           // Phase 2：主板每筆 EVENT/STATUS 解析後 → 推到對應 text_sensor
           // Phase 3：解析後同步餵 sim_assertion（observe_event）
@@ -50,6 +56,32 @@ esphome:
               id(asrt).observe_event(ev.event_name, ev.wash_phase, ev.wash_stage, ev.wash_total);
             }
           });
+          // Phase 5：batch 每輪起始/結束的 hook
+          //   起始：送 wash_init（主板才會 track wash_phase）+ startwasher5
+          //   結束：送 wash_reset（清主板 wash state，下一輪乾淨）
+          id(fsm).set_on_batch_round_callback([](uint32_t round_idx, bool starting) {
+            if (starting) {
+              // wash_init 6 步（對齊 sim_fsm SCENARIO_SW5 的 6 個 GREEN 相位）
+              id(sws).send_text(
+                "{\"type\":\"CMD\",\"cmd\":\"wash_init\","
+                "\"total\":6,\"bb_timeout\":120,"
+                "\"steps\":["
+                  "{\"id\":\"501\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Standby\"},"
+                  "{\"id\":\"502\",\"bb\":0,\"R03\":0,\"auto_sec\":1,\"name\":\"Pre-Wash\"},"
+                  "{\"id\":\"503\",\"bb\":1,\"R03\":0,\"auto_sec\":1,\"name\":\"Foam\"},"
+                  "{\"id\":\"504\",\"bb\":0,\"R03\":0,\"auto_sec\":1,\"name\":\"AIScanning\"},"
+                  "{\"id\":\"505\",\"bb\":0,\"R03\":0,\"auto_sec\":1,\"name\":\"Final_Rinse\"},"
+                  "{\"id\":\"506\",\"bb\":0,\"R03\":0,\"auto_sec\":0,\"name\":\"Complete\"}"
+                "]}");
+              // 100ms 後送 startwasher5（讓主板處理完 wash_init）
+              // 直接連送、主板 message queue 會處理
+              id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"startwasher5\"}");
+            } else {
+              // 結束：清主板 wash state
+              id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_reset\"}");
+            }
+          });
+
           // Phase 4：每筆 assertion 結果 → 推 CSV 行到 text_sensor
           //   格式：rule_id,P/F,actual_ms,window_ms,timestamp_ms,detail
           //   JS 端 SSE 收到後 split + 加入 rolling table
@@ -542,6 +574,16 @@ button:
     on_press:
       - lambda: |-
           id(sws).send_text("{\"type\":\"CMD\",\"cmd\":\"wash_unlock\"}");
+
+  # === Phase 5：A8 WS reconnect 測試 ===
+  # 主動斷線 → 期待主板 60s 內重連（模擬幻象重連 race condition）
+  - platform: template
+    name: "Test A8 (disconnect+reconnect)"
+    id: btn_test_a8
+    on_press:
+      - lambda: |-
+          id(asrt).expect_event("A8", "ws_reconnect", "", -1, 60000);
+          id(sws).disconnect_client("A8 test");
 
 # === Phase 3：故障注入機率 number sliders ===
 number:

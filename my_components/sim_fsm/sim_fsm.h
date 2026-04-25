@@ -46,6 +46,10 @@ using RxByteLogCb = std::function<void(uint8_t byte_val)>;
 using OnWasherCmdCb = std::function<void(WasherCmd cmd)>;
 // 每次 FSM 狀態變化（LED 色 / scenario step 前進）
 using OnFsmStateCb = std::function<void(const char *event_name, const std::string &detail)>;
+// Phase 5：batch 每輪起始/結束的 hook（讓 YAML 注入 wash_init / wash_reset CMD）
+//   round_idx = 1-based 第幾輪
+//   starting = true 進新輪，false = 該輪 scenario 結束
+using OnBatchRoundCb = std::function<void(uint32_t round_idx, bool starting)>;
 
 class SimFsmComponent : public Component {
  public:
@@ -61,6 +65,7 @@ class SimFsmComponent : public Component {
   void set_rx_byte_log_callback(RxByteLogCb cb) { rx_cb_ = std::move(cb); }
   void set_on_washer_cmd_callback(OnWasherCmdCb cb) { cmd_cb_ = std::move(cb); }
   void set_on_fsm_state_callback(OnFsmStateCb cb) { state_cb_ = std::move(cb); }
+  void set_on_batch_round_callback(OnBatchRoundCb cb) { batch_round_cb_ = std::move(cb); }
 
   void setup() override;
   void loop() override;
@@ -117,6 +122,7 @@ class SimFsmComponent : public Component {
   RxByteLogCb rx_cb_ = nullptr;
   OnWasherCmdCb cmd_cb_ = nullptr;
   OnFsmStateCb state_cb_ = nullptr;
+  OnBatchRoundCb batch_round_cb_ = nullptr;
 
   // === UART2 RX frame parser state machine ===
   // 7-byte frame: FD 03 C7 50 <CMD> <CHK> DF

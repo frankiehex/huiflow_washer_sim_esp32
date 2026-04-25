@@ -354,6 +354,8 @@ void SimFsmComponent::finish_scenario_() {
   emit_state_("scenario_finish", buf);
   scenario_ = nullptr;
   scenario_waiting_gowasher_ = false;
+  // Phase 5：通知 YAML hook 該輪結束（讓它送 wash_reset 清主板）
+  if (batch_round_cb_) batch_round_cb_(batch_completed_, false);
   // Phase 3：若處於 batch，標記下一輪起跑時機
   if (batch_remaining_ > 0) {
     batch_inter_run_until_ms_ = millis() + batch_inter_run_ms_;
@@ -412,6 +414,8 @@ void SimFsmComponent::tick_batch_() {
   // 上一輪結束剛標記 batch_inter_run_until_ms_ 後，此輪起跑
   batch_completed_++;
   batch_remaining_--;
+  // Phase 5：通知 YAML hook（讓它送 wash_init / startwasher5 給主板）
+  if (batch_round_cb_) batch_round_cb_(batch_completed_, true);
   start_scenario(batch_scenario_name_.c_str(), batch_speed_factor_);
 }
 
