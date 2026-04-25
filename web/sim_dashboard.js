@@ -479,16 +479,42 @@
     }
   }
 
+  // 批次處理：避免每筆 SSE 都觸發 reflow，用 rAF 合併
+  const _pending = new Map();   // id -> latest value
+  let _rafScheduled = false;
+  function flushPending() {
+    _rafScheduled = false;
+    for (const [id, value] of _pending.entries()) {
+      try { updateEntity(id, value); } catch (e) {}
+    }
+    _pending.clear();
+  }
+
   function hookEvents() {
-    const es = new EventSource('/events');
-    es.addEventListener('state', (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg && typeof msg.id === 'string' && msg.value !== undefined) {
-          updateEntity(msg.id, String(msg.value));
-        }
-      } catch (e) {}
-    });
+    let es;
+    let backoff = 1000;
+    function connect() {
+      try { es = new EventSource('/events'); } catch (e) { setTimeout(connect, backoff); return; }
+      es.addEventListener('state', (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg && typeof msg.id === 'string' && msg.value !== undefined) {
+            _pending.set(msg.id, String(msg.value));
+            if (!_rafScheduled) {
+              _rafScheduled = true;
+              requestAnimationFrame(flushPending);
+            }
+          }
+        } catch (e) {}
+      });
+      es.onerror = () => {
+        try { es.close(); } catch (e) {}
+        setTimeout(connect, backoff);
+        backoff = Math.min(backoff * 2, 15000);
+      };
+      es.onopen = () => { backoff = 1000; };
+    }
+    connect();
   }
 
   function init() {
