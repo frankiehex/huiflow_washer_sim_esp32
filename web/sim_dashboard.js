@@ -68,6 +68,7 @@
           <button id="sim-clear-table" style="background:#422;color:#fc6;border:1px solid #864;padding:2px 8px;margin-left:4px;cursor:pointer">🗑 Clear</button>
         </span>
       </div>
+      <div id="sim-perrule" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;font-size:11px"></div>
       <table style="width:100%;border-collapse:collapse" id="sim-rtable">
         <thead style="background:#222"><tr style="text-align:left">
           <th style="padding:4px">#</th>
@@ -227,6 +228,32 @@
         const fb = document.getElementById('sim-failbar');
         if (el) el.textContent = value || '--';
         if (fb) fb.style.display = (value && value.trim() !== '') ? '' : 'none';
+        break;
+      }
+      case 'text_sensor-assertion_per_rule': {
+        // 格式 "A1:5/0@320ms|A2:3/2@420ms|..."
+        const box = document.getElementById('sim-perrule');
+        if (!box) break;
+        box.innerHTML = '';
+        if (!value || value === '(none)') break;
+        for (const part of value.split('|')) {
+          const m = part.match(/^([A-Z]\d+):(\d+)\/(\d+)(?:@(\d+)ms)?$/);
+          if (!m) continue;
+          const rule = m[1], pass = +m[2], fail = +m[3], avg = m[4] ? `@${m[4]}ms` : '';
+          const total = pass + fail;
+          const passPct = total ? Math.round(pass * 100 / total) : 0;
+          const chip = document.createElement('span');
+          chip.style.cssText = `display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:3px;background:#222;border:1px solid #444`;
+          chip.innerHTML = `
+            <strong style="color:#fff">${rule}</strong>
+            <span style="color:#3c6">${pass}</span>/<span style="color:#f66">${fail}</span>
+            <span style="display:inline-block;width:60px;height:8px;background:#400;border-radius:2px;overflow:hidden">
+              <span style="display:inline-block;width:${passPct}%;height:100%;background:#3c6"></span>
+            </span>
+            <span style="color:#888">${avg}</span>
+          `;
+          box.appendChild(chip);
+        }
         break;
       }
       case 'text_sensor-assertion_result_csv': {
