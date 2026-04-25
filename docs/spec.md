@@ -1,4 +1,6 @@
-# HuiFlow 洗車機模擬板 — 技術規格 (v0.6.0)
+# HuiFlow 洗車機模擬板 — 技術規格 (v0.8.2)
+
+> 完整版本演進見 [`CHANGELOG.md`](../CHANGELOG.md)
 
 ## Purpose
 
@@ -169,7 +171,12 @@ URL: `http://192.168.1.10/`
 | 4 | Result CSV streaming + Dashboard rolling table + A5 | ✅ v0.4.0 |
 | 5 | Smart batch (wash_init auto-inject) + A8 | ✅ v0.5.0 |
 | 6 | Per-rule stats + A6 + A9 | ✅ v0.6.0 |
-| 7 | A7 UART2 burst rate + 1000-round stress test | TODO |
+| 7 | A7 UART2 burst | ✅ v0.7.0 |
+| 7.1 | A8/A9 timing fix (globals 2-stage expect) | ✅ v0.7.1 |
+| 8 | Self-Test script 一鍵串 A5/A6/A8/A9 | ✅ v0.8.0 |
+| 8.1 | min_actual_ms guard 防 stale fast-PASS | ✅ v0.8.1 |
+| 8.2 | rx_accum stuck 防護 + sim restart 按鈕 | ✅ v0.8.2 (current) |
+| 9 | 1000-round stress test + per-rule histogram | TODO |
 
 ## Resources
 
